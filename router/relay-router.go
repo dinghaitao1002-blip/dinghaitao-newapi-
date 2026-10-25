@@ -16,6 +16,11 @@ func SetRelayRouter(router *gin.Engine) {
 	router.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	router.Use(middleware.StatsMiddleware())
 	// https://platform.openai.com/docs/api-reference/introduction
+	imageTaskRouter := router.Group("/v1/images/tasks")
+	imageTaskRouter.Use(middleware.RouteTag("relay"))
+	imageTaskRouter.Use(middleware.TokenAuthReadOnly(), middleware.ImageTaskReadAuth(), middleware.ImageTaskReadRateLimit())
+	imageTaskRouter.GET("/:task_id", controller.GetImageAsyncTask)
+	imageTaskRouter.GET("/:task_id/result", controller.GetImageAsyncTaskResult)
 	modelsRouter := router.Group("/v1/models")
 	modelsRouter.Use(middleware.RouteTag("relay"))
 	modelsRouter.Use(middleware.TokenAuth())
@@ -111,15 +116,9 @@ func SetRelayRouter(router *gin.Engine) {
 		})
 
 		// image related routes
-		httpRouter.POST("/edits", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIImage)
-		})
-		httpRouter.POST("/images/generations", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIImage)
-		})
-		httpRouter.POST("/images/edits", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIImage)
-		})
+		httpRouter.POST("/edits", controller.RelayImage)
+		httpRouter.POST("/images/generations", controller.RelayImage)
+		httpRouter.POST("/images/edits", controller.RelayImage)
 
 		// embedding related routes
 		httpRouter.POST("/embeddings", func(c *gin.Context) {

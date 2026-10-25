@@ -37,6 +37,11 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 	var err *types.NewAPIError
 	switch info.RelayMode {
 	case relayconstant.RelayModeImagesGenerations, relayconstant.RelayModeImagesEdits:
+		if service.IsImageAsyncRequest(c) {
+			// Background jobs have a bounded overall execution deadline; they do
+			// not inherit the synchronous client's 60-second attempt timeout.
+			return relay.ImageHelper(c, info)
+		}
 		// Image providers can otherwise leave a request waiting indefinitely. Keep
 		// the timeout scoped to this attempt so the existing retry loop can switch
 		// to the next eligible channel without affecting text, audio, or video.
@@ -99,6 +104,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	defer func() {
 		if newAPIError != nil {
+			if service.IsImageAsyncRequest(c) {
+				c.Set("image_async_relay_error", newAPIError)
+			}
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			switch relayFormat {
@@ -169,7 +177,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	// common.SetContextKey(c, constant.ContextKeyTokenCountMeta, meta)
 
-	if priceData.FreeModel {
+	if priceData.FreeModel && !service.IsImageAsyncRequest(c) {
 		logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", relayInfo.OriginModelName))
 	} else {
 		newAPIError = service.PreConsumeBilling(c, priceData.QuotaToPreConsume, relayInfo)
@@ -182,6 +190,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// Only return quota if downstream failed and quota was actually pre-consumed
 		if newAPIError != nil {
 			newAPIError = service.NormalizeViolationFeeError(newAPIError)
+			if service.IsImageAsyncRequest(c) {
+				// Settle an applicable existing violation fee atomically against
+				// this job before refunding. Ordinary failed jobs are refunded.
+				if !service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError) && relayInfo.Billing != nil {
+					relayInfo.Billing.Refund(c)
+				}
+				return
+			}
 			if relayInfo.Billing != nil {
 				relayInfo.Billing.Refund(c)
 			}
@@ -242,6 +258,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
+		// Async output/billing errors and ambiguous transport failures must not
+		// be replayed by the forced circuit retry or the legacy timeout override.
+		if service.IsImageAsyncRequest(c) && !canRetryAsyncImage(c, newAPIError) {
+			break
+		}
 
 		quotaExhausted := service.IsChannelQuotaExhausted(channel.Id, newAPIError)
 		quotaStopped := false
@@ -295,6 +316,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
 	}
+}
+
+func canRetryAsyncImage(c *gin.Context, apiErr *types.NewAPIError) bool {
+	return c.Request != nil && c.Request.Context().Err() == nil && !c.Writer.Written() &&
+		!types.IsSkipRetryError(apiErr) && apiErr.GetErrorCode() != types.ErrorCodeUpdateDataError &&
+		apiErr.GetErrorCode() != types.ErrorCodeDoRequestFailed
 }
 
 var upgrader = websocket.Upgrader{

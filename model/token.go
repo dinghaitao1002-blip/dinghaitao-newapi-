@@ -260,6 +260,11 @@ func GetTokenById(id int) (*Token, error) {
 }
 
 func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
+	if imageAsyncQuotaReads.Load() {
+		// Avoid both a stale quota read and scheduling a stale cache refill.
+		err = DB.Where(commonKeyCol+" = ?", key).First(&token).Error
+		return token, err
+	}
 	defer func() {
 		// Update Redis cache asynchronously on successful DB read
 		if shouldUpdateRedis(fromDB, err) && token != nil {

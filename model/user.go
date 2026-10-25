@@ -1131,6 +1131,10 @@ func ValidateAccessToken(token string) (*User, error) {
 
 // GetUserQuota gets quota from Redis first, falls back to DB if needed
 func GetUserQuota(id int, fromDB bool) (quota int, err error) {
+	if imageAsyncQuotaReads.Load() {
+		err = DB.Model(&User{}).Where("id = ?", id).Select("quota").Find(&quota).Error
+		return quota, err
+	}
 	defer func() {
 		// Update Redis cache asynchronously on successful DB read
 		if shouldUpdateRedis(fromDB, err) {

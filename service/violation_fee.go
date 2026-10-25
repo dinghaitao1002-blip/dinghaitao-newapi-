@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -81,26 +82,21 @@ func shouldChargeViolationFee(err *types.NewAPIError) bool {
 	return HasCSAMViolationMarker(err)
 }
 
-func calcViolationFeeQuota(amount, groupRatio float64) int {
-	if amount <= 0 {
-		return 0
+func calcViolationFeeQuota(amount, groupRatio float64) (int, *common.QuotaClamp) {
+	if amount <= 0 || math.IsNaN(amount) || math.IsInf(amount, 0) {
+		return 0, nil
 	}
-	if groupRatio <= 0 {
-		return 0
+	if groupRatio <= 0 || math.IsNaN(groupRatio) || math.IsInf(groupRatio, 0) {
+		return 0, nil
 	}
-	quota := decimal.NewFromFloat(amount).
+	return common.QuotaFromDecimalChecked(decimal.NewFromFloat(amount).
 		Mul(decimal.NewFromFloat(common.QuotaPerUnit)).
 		Mul(decimal.NewFromFloat(groupRatio)).
-		Round(0).
-		IntPart()
-	if quota <= 0 {
-		return 0
-	}
-	return int(quota)
+		Round(0))
 }
 
-// ChargeViolationFeeIfNeeded charges an additional fee after the normal flow finishes (including refund).
-// It uses Grok fee settings as the fee policy.
+// ChargeViolationFeeIfNeeded uses Grok fee settings as the fee policy. Synchronous
+// calls run after refund; async calls settle the reservation before any refund.
 func ChargeViolationFeeIfNeeded(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, apiErr *types.NewAPIError) bool {
 	if ctx == nil || relayInfo == nil || apiErr == nil {
 		return false
@@ -118,14 +114,34 @@ func ChargeViolationFeeIfNeeded(ctx *gin.Context, relayInfo *relaycommon.RelayIn
 	}
 
 	groupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
-	feeQuota := calcViolationFeeQuota(settings.ViolationDeductionAmount, groupRatio)
+	feeQuota, clamp := calcViolationFeeQuota(settings.ViolationDeductionAmount, groupRatio)
+	noteQuotaClamp(relayInfo, clamp)
 	if feeQuota <= 0 {
 		return false
 	}
 
-	if err := PostConsumeQuota(relayInfo, feeQuota, 0, true); err != nil {
-		logger.LogError(ctx, fmt.Sprintf("failed to charge violation fee: %s", err.Error()))
+	var chargeErr error
+	if IsImageAsyncRequest(ctx) {
+		if relayInfo.Billing == nil {
+			chargeErr = fmt.Errorf("async image violation fee has no billing reservation")
+		} else {
+			// The controller invokes this before refunding failed async jobs.
+			// Settle the original reservation to the fee exactly once; no image
+			// result is required for this explicit failure-billing policy.
+			chargeErr = relayInfo.Billing.Settle(feeQuota)
+		}
+	} else {
+		chargeErr = PostConsumeQuota(relayInfo, feeQuota, 0, true)
+	}
+	if chargeErr != nil {
+		if IsImageAsyncRequest(ctx) {
+			ctx.Set(ImageAsyncBillingErrorContextKey, chargeErr)
+		}
+		logger.LogError(ctx, fmt.Sprintf("failed to charge violation fee: %s", chargeErr.Error()))
 		return false
+	}
+	if IsImageAsyncRequest(ctx) && imageAsyncSettlementReplayed(relayInfo) {
+		return true
 	}
 
 	model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, feeQuota)
@@ -146,6 +162,7 @@ func ChargeViolationFeeIfNeeded(ctx *gin.Context, relayInfo *relaycommon.RelayIn
 		"upstream_error_code":  fmt.Sprintf("%v", oai.Code),
 		"violation_fee_marker": CSAMViolationMarker,
 	}
+	attachQuotaSaturation(ctx, relayInfo, other)
 
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:      relayInfo.ChannelId,

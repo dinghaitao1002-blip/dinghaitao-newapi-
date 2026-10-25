@@ -34,6 +34,14 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 			types.ErrOptionWithSkipRetry(),
 		)
 	}
+	if IsImageAsyncRequest(c) {
+		session, apiErr := newImageAsyncBillingSession(c, relayInfo, preConsumedQuota)
+		if apiErr != nil {
+			return apiErr
+		}
+		relayInfo.Billing = session
+		return nil
+	}
 	session, apiErr := NewBillingSession(c, relayInfo, preConsumedQuota)
 	if apiErr != nil {
 		return apiErr
@@ -74,6 +82,9 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 		if err := relayInfo.Billing.Settle(actualQuota); err != nil {
 			return err
 		}
+		if IsImageAsyncRequest(ctx) && imageAsyncSettlementReplayed(relayInfo) {
+			return nil
+		}
 
 		// 发送额度通知（订阅计费使用订阅剩余额度）
 		if actualQuota != 0 {
@@ -86,6 +97,9 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 		return nil
 	}
 
+	if IsImageAsyncRequest(ctx) {
+		return fmt.Errorf("async image settlement has no billing reservation")
+	}
 	// 回退：无 BillingSession 时使用旧路径
 	quotaDelta := actualQuota - relayInfo.FinalPreConsumedQuota
 	if quotaDelta != 0 {

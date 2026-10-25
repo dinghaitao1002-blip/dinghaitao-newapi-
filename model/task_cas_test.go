@@ -9,20 +9,41 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
+	mysqlconfig "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 func TestMain(m *testing.M) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	var dialector gorm.Dialector = sqlite.Open(":memory:")
+	gormConfig := &gorm.Config{}
+	databaseType := common.DatabaseTypeSQLite
+	maxConnections := 1
+	if dsn := os.Getenv("NEWAPI_TEST_MYSQL_DSN"); dsn != "" {
+		// Never permit tests (including cleanup) against an application DB.
+		// Keep DSNs and driver errors out of output because they may contain
+		// the isolated test account's connection credentials.
+		config, err := mysqlconfig.ParseDSN(dsn)
+		if err != nil || config.DBName != "newapi_image_async_test" {
+			panic("NEWAPI_TEST_MYSQL_DSN must select the isolated newapi_image_async_test database")
+		}
+		config.ParseTime = true
+		dialector = gormmysql.Open(config.FormatDSN())
+		databaseType = common.DatabaseTypeMySQL
+		maxConnections = 8
+		gormConfig.Logger = gormlogger.Default.LogMode(gormlogger.Silent)
+	}
+	db, err := gorm.Open(dialector, gormConfig)
 	if err != nil {
-		panic("failed to open test db: " + err.Error())
+		panic("failed to open isolated test database")
 	}
 	DB = db
 	LOG_DB = db
 
-	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	common.SetDatabaseTypes(databaseType, databaseType)
 	common.RedisEnabled = false
 	common.BatchUpdateEnabled = false
 	common.LogConsumeEnabled = true
@@ -32,7 +53,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic("failed to get sql.DB: " + err.Error())
 	}
-	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxOpenConns(maxConnections)
 
 	if err := db.AutoMigrate(
 		&Task{},
@@ -57,6 +78,8 @@ func TestMain(m *testing.M) {
 		&SystemInstance{},
 		&SystemTask{},
 		&SystemTaskLock{},
+		&ImageAsyncTask{},
+		&ImageAsyncQueueLock{},
 	); err != nil {
 		panic("failed to migrate: " + err.Error())
 	}
@@ -67,6 +90,8 @@ func TestMain(m *testing.M) {
 func truncateTables(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
+		DB.Exec("DELETE FROM image_async_tasks")
+		DB.Exec("DELETE FROM image_async_queue_locks")
 		DB.Exec("DELETE FROM tasks")
 		DB.Exec("DELETE FROM auth_flows")
 		DB.Exec("DELETE FROM external_identity_claims")
