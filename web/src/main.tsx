@@ -67,6 +67,12 @@ const queryClient = new QueryClient({
       },
       // Keep focused tabs from silently re-running heavy pages like logs.
       refetchOnWindowFocus: false,
+      // Route transitions in the SPA remount page queries without reloading the
+      // browser. Always revalidate on mount so returning to any module cannot
+      // keep showing a still-fresh but outdated cache entry after a mutation.
+      // React Query keeps the cached value visible while the request runs, so
+      // this does not introduce an empty loading flash.
+      refetchOnMount: 'always',
       staleTime: 10 * 1000, // 10s
     },
     mutations: {
@@ -86,7 +92,9 @@ const queryClient = new QueryClient({
       if (error instanceof AxiosError) {
         if (error.response?.status === 500) {
           toast.error(i18next.t('Internal Server Error!'))
-          router.navigate({ to: '/500' })
+          // A background query can fail transiently while the rest of the
+          // current page is still usable. Keep the page and its cached data
+          // visible instead of replacing the whole console with /500.
         }
       }
     },

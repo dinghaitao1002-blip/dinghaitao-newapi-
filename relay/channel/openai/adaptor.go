@@ -392,6 +392,9 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		if err2 != nil {
 			return nil, fmt.Errorf("error parsing multipart form: %w", err2)
 		}
+		// The audio file is copied into requestBody below; nothing keeps the
+		// parsed form (and its multipart-* temp file) after this returns.
+		defer formData.RemoveAll()
 
 		// 打印类似 curl 命令格式的信息
 		logger.LogDebug(c.Request.Context(), "--form 'model=\"%s\"'", request.Model)
@@ -447,8 +450,12 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 			return request, nil
 		}
 
-		var requestBody bytes.Buffer
-		writer := multipart.NewWriter(&requestBody)
+		// The rebuilt form is about as large as the client upload, so spool
+		// it the way the ingress body was spooled: to disk when the disk
+		// cache accepts that size, otherwise in memory.
+		spool := common.NewBodySpool(max(c.Request.ContentLength, 0))
+		defer spool.Discard()
+		writer := multipart.NewWriter(spool)
 
 		writer.WriteField("model", request.Model)
 		// 使用已解析的 multipart 表单，避免重复解析
@@ -565,9 +572,15 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 		}
 
 		// 关闭 multipart 编写器以设置分界线
-		writer.Close()
+		if err := writer.Close(); err != nil {
+			return nil, fmt.Errorf("finish multipart body failed: %w", err)
+		}
+		requestBody, err := spool.Finish()
+		if err != nil {
+			return nil, err
+		}
 		c.Request.Header.Set("Content-Type", writer.FormDataContentType())
-		return &requestBody, nil
+		return requestBody, nil
 
 	default:
 		return request, nil

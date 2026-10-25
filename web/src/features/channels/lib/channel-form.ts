@@ -170,6 +170,7 @@ export const channelFormSchema = z
     openai_organization: z.string().optional(),
     models: z.string().min(1, ERROR_MESSAGES.REQUIRED_MODELS),
     group: z.array(z.string()).min(1, ERROR_MESSAGES.REQUIRED_GROUP),
+    category: z.string().max(64, 'Channel category must be 64 characters or fewer').optional(),
     model_mapping: z
       .string()
       .optional()
@@ -352,6 +353,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   openai_organization: '',
   models: '',
   group: ['default'],
+  category: '',
   model_mapping: '',
   priority: 0,
   weight: 0,
@@ -493,6 +495,7 @@ export function transformChannelToFormDefaults(
     openai_organization: channel.openai_organization || '',
     models: channel.models || '',
     group: parseGroups(channel.group || 'default'),
+    category: channel.category || '',
     model_mapping: channel.model_mapping || '',
     priority: channel.priority || 0,
     weight: channel.weight || 0,
@@ -705,6 +708,7 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     openai_organization: formData.openai_organization || null,
     models: formData.models,
     group: formatGroups(formData.group),
+    category: formData.category?.trim() || '',
     model_mapping: formData.model_mapping || null,
     priority: formData.priority || null,
     weight: formData.weight || null,
@@ -753,6 +757,7 @@ export function transformFormDataToUpdatePayload(
     openai_organization: formData.openai_organization || null,
     models: formData.models,
     group: formatGroups(formData.group),
+    category: formData.category?.trim() || '',
     model_mapping: formData.model_mapping || null,
     priority: formData.priority ?? 0,
     weight: formData.weight ?? 0,

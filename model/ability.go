@@ -122,6 +122,24 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 		return nil, err
 	}
 	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
+	if len(abilities) > 0 {
+		channelIDs := make([]int, 0, len(abilities))
+		for _, ability := range abilities {
+			channelIDs = append(channelIDs, ability.ChannelId)
+		}
+		usableIDs := common.FilterUsableChannelIDs(channelIDs, model)
+		usable := make(map[int]struct{}, len(usableIDs))
+		for _, channelID := range usableIDs {
+			usable[channelID] = struct{}{}
+		}
+		filtered := abilities[:0]
+		for _, ability := range abilities {
+			if _, ok := usable[ability.ChannelId]; ok {
+				filtered = append(filtered, ability)
+			}
+		}
+		abilities = filtered
+	}
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one

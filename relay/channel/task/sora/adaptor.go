@@ -18,6 +18,7 @@ import (
 	taskcommon "github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
@@ -70,8 +71,16 @@ type TaskAdaptor struct {
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 	a.ChannelType = info.ChannelType
-	a.baseURL = info.ChannelBaseUrl
+	a.baseURL = normalizeOpenAIBaseURL(info.ChannelBaseUrl)
 	a.apiKey = info.ApiKey
+}
+
+// normalizeOpenAIBaseURL accepts the two common channel URL forms:
+// https://example.com and https://example.com/v1. Task endpoints append their
+// own /v1 path, so retaining a configured /v1 suffix would produce /v1/v1.
+func normalizeOpenAIBaseURL(baseURL string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	return strings.TrimSuffix(baseURL, "/v1")
 }
 
 func validateRemixRequest(c *gin.Context) *dto.TaskError {
@@ -119,6 +128,52 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 		size = "720x1280"
 	}
 
+	if billing_setting.GetBillingMode(info.OriginModelName) == billing_setting.BillingModeVideoPerSecond {
+		resolution := normalizeVideoResolution(req.Resolution, size)
+		basePrice, baseOk := billing_setting.GetVideoSecondBasePrice(info.OriginModelName)
+		resolutionPrice, priceOk := billing_setting.GetVideoSecondPrice(info.OriginModelName, resolution)
+		if !baseOk || !priceOk || basePrice <= 0 {
+			return nil
+		}
+		return map[string]float64{
+			"seconds":                float64(seconds),
+			"resolution_price_ratio": resolutionPrice / basePrice,
+		}
+	}
+
+	// Only grok-imagine-video uses the custom resolution pricing.
+	// All other Sora models retain their original billing behavior.
+	if info.OriginModelName == "grok-imagine-video" {
+		resolution := strings.ToLower(strings.TrimSpace(req.Resolution))
+		sizeRatio := 1.0
+
+		if resolution != "" {
+			switch resolution {
+			case "1080p":
+				sizeRatio = 3.6
+			case "720p":
+				sizeRatio = 2.0
+			case "480p":
+				sizeRatio = 1.0
+			}
+		} else {
+			switch size {
+			case "1920x1080", "1080x1920":
+				sizeRatio = 3.6
+			case "1280x720", "720x1280":
+				sizeRatio = 2.0
+			case "848x480", "480x848":
+				sizeRatio = 1.0
+			}
+		}
+
+		return map[string]float64{
+			"seconds": float64(seconds),
+			"size":    sizeRatio,
+		}
+	}
+
+	// Preserve the original billing behavior for every other model.
 	ratios := map[string]float64{
 		"seconds": float64(seconds),
 		"size":    1,
@@ -127,6 +182,26 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 		ratios["size"] = 1.666667
 	}
 	return ratios
+}
+
+func normalizeVideoResolution(resolution, size string) string {
+	normalized := strings.ToLower(strings.TrimSpace(resolution))
+	switch normalized {
+	case "480p", "720p", "1080p", "4k":
+		return normalized
+	case "2160p":
+		return "4k"
+	}
+	switch strings.ToLower(strings.TrimSpace(size)) {
+	case "4k", "3840x2160", "2160x3840", "4096x2160", "2160x4096":
+		return "4k"
+	case "1920x1080", "1080x1920":
+		return "1080p"
+	case "848x480", "480x848":
+		return "480p"
+	default:
+		return "720p"
+	}
 }
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
@@ -170,6 +245,9 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		if err != nil {
 			return bytes.NewReader(cachedBody), nil
 		}
+		// Every part is copied into buf below; nothing keeps the parsed form
+		// (and its multipart-* temp file) after this returns.
+		defer formData.RemoveAll()
 		var buf bytes.Buffer
 		writer := multipart.NewWriter(&buf)
 		writer.WriteField("model", info.UpstreamModelName)
@@ -263,7 +341,7 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 		return nil, fmt.Errorf("invalid task_id")
 	}
 
-	uri := fmt.Sprintf("%s/v1/videos/%s", baseUrl, taskID)
+	uri := fmt.Sprintf("%s/v1/videos/%s", normalizeOpenAIBaseURL(baseUrl), taskID)
 
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
 	if err != nil {
@@ -317,8 +395,45 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	if resTask.Progress > 0 && resTask.Progress < 100 {
 		taskResult.Progress = fmt.Sprintf("%d%%", resTask.Progress)
 	}
+	if seconds, err := strconv.Atoi(strings.TrimSpace(resTask.Seconds)); err == nil && seconds > 0 {
+		taskResult.Seconds = seconds
+	}
+	taskResult.Resolution = normalizeVideoResolution("", resTask.Size)
 
 	return &taskResult, nil
+}
+
+func (a *TaskAdaptor) AdjustBillingOnComplete(task *model.Task, taskResult *relaycommon.TaskInfo) int {
+	if task == nil || task.PrivateData.BillingContext == nil || taskResult == nil {
+		return 0
+	}
+	if taskResult.Status != model.TaskStatusSuccess {
+		return 0
+	}
+	bc := task.PrivateData.BillingContext
+	if billing_setting.GetBillingMode(bc.OriginModelName) != billing_setting.BillingModeVideoPerSecond {
+		return 0
+	}
+
+	seconds := taskResult.Seconds
+	if seconds <= 0 {
+		if value := bc.OtherRatios["seconds"]; value > 0 {
+			seconds = int(value)
+		}
+	}
+	if seconds <= 0 {
+		return 0
+	}
+
+	resolutionRatio := bc.OtherRatios["resolution_price_ratio"]
+	if resolutionRatio <= 0 {
+		resolutionRatio = 1
+	}
+
+	quota, _ := common.QuotaFromFloatChecked(
+		bc.ModelPrice * common.QuotaPerUnit * bc.GroupRatio * float64(seconds) * resolutionRatio,
+	)
+	return quota
 }
 
 func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
@@ -326,6 +441,9 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 	var err error
 	if data, err = sjson.SetBytes(data, "id", task.TaskID); err != nil {
 		return nil, errors.Wrap(err, "set id failed")
+	}
+	if data, err = sjson.SetBytes(data, "task_id", task.TaskID); err != nil {
+		return nil, errors.Wrap(err, "set task_id failed")
 	}
 	return data, nil
 }

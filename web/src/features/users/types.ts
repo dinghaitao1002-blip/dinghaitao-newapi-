@@ -82,6 +82,7 @@ export type UserSortBy =
   | 'id'
   | 'username'
   | 'quota'
+  | 'used_quota'
   | 'group'
   | 'created_at'
   | 'last_login_at'
@@ -115,6 +116,50 @@ export interface SearchUsersParams {
   page_size?: number
   sort_by?: UserSortBy
   sort_order?: UserSortOrder
+}
+
+
+export interface UserModelPrice {
+  id: number
+  user_id: number
+  model_name: string
+  price: number
+  enabled: boolean
+  created_at?: number
+  updated_at?: number
+}
+
+export type ImageQualityLevel = 'low' | 'medium' | 'high'
+export type ImageResolutionLevel = '1k' | '2k' | '4k'
+
+export interface ImageQualityPriceItem {
+  quality: ImageQualityLevel
+  resolution: ImageResolutionLevel
+  price: number
+  enabled: boolean
+}
+
+export interface UserModelImageQualityPrice {
+  id: number
+  user_id: number
+  model_name: string
+  quality: ImageQualityLevel
+  resolution: ImageResolutionLevel
+  price: number
+  enabled: boolean
+  created_at?: number
+  updated_at?: number
+}
+
+export interface PerCallPricedModel {
+  model_name: string
+  model_price: number
+  enable_groups?: string[]
+  supported_endpoint_types?: string[]
+  description?: string
+  icon?: string
+  tags?: string
+  vendor_id?: number
 }
 
 export interface UserFormData {

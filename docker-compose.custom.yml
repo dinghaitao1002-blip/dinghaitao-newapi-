@@ -1,0 +1,26 @@
+services:
+  newapi-custom:
+    image: new-api-custom:image-memory-20260929
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: newapi-custom
+    restart: always
+    ports:
+      - "127.0.0.1:3019:3000"
+    environment:
+      - SQL_DSN=${SQL_DSN:?Set SQL_DSN in the private runtime environment}
+      - REDIS_CONN_STRING=${REDIS_CONN_STRING:?Set REDIS_CONN_STRING in the private runtime environment}
+      - SESSION_SECRET=${SESSION_SECRET:?Set SESSION_SECRET in the private runtime environment}
+      - TZ=Asia/Shanghai
+      - ERROR_LOG_ENABLED=true
+      - GODEBUG=http2client=0
+    volumes:
+      - /opt/newapi/newapi-data:/data
+      - /opt/newapi/newapi-logs-custom:/app/logs
+    networks:
+      - newapi_newapi-net
+
+networks:
+  newapi_newapi-net:
+    external: true

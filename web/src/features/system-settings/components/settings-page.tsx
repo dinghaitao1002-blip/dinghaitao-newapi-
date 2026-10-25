@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useParams } from '@tanstack/react-router'
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
@@ -111,11 +111,18 @@ export function SettingsPage<
   resolveSettings,
 }: SettingsPageProps<TSettings, TSectionId, TExtraArgs>) {
   const { t } = useTranslation()
-  const { data, isLoading } = useSystemOptions()
+  const { data, isLoading, refetch } = useSystemOptions()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params = useParams({ from: routePath as any })
   const activeSection = (params?.section ?? defaultSection) as TSectionId
   const sectionMeta = getSectionMeta(activeSection)
+  const previousSectionRef = useRef(activeSection)
+
+  useEffect(() => {
+    if (previousSectionRef.current === activeSection) return
+    previousSectionRef.current = activeSection
+    void refetch()
+  }, [activeSection, refetch])
 
   const settings = useMemo(() => {
     const baseSettings = getOptionValue(

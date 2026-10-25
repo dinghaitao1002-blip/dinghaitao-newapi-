@@ -52,6 +52,7 @@ export const channelSchema = z.object({
   balance_updated_time: z.number(),
   models: z.string().default(''),
   group: z.string().default('default'),
+  category: z.string().default(''),
   used_quota: z.number().default(0),
   model_mapping: z.string().nullish(),
   status_code_mapping: z.string().nullish(),
@@ -74,6 +75,19 @@ export const channelSchema = z.object({
 })
 
 export type Channel = z.infer<typeof channelSchema>
+
+export interface ChannelCategory {
+  id: number
+  name: string
+  created_time: number
+  channel_count: number
+}
+
+export interface ChannelCategoriesResponse {
+  success: boolean
+  message?: string
+  data?: ChannelCategory[]
+}
 
 // ============================================================================
 // Channel Settings Types
@@ -152,6 +166,7 @@ export interface GetChannelsResponse {
     page: number
     page_size: number
     type_counts?: Record<string, number>
+    category_counts?: Record<string, number>
   }
 }
 
@@ -162,6 +177,7 @@ export interface SearchChannelsResponse {
     items: Channel[]
     total: number
     type_counts?: Record<string, number>
+    category_counts?: Record<string, number>
   }
 }
 
@@ -269,6 +285,7 @@ export interface GetChannelsParams {
   status?: string // 'enabled', 'disabled', or empty for all
   type?: number
   group?: string
+  category?: string
   id_sort?: boolean
   tag_mode?: boolean
   sort_by?: ChannelSortBy
@@ -278,6 +295,7 @@ export interface GetChannelsParams {
 export interface SearchChannelsParams {
   keyword?: string
   group?: string
+  category?: string
   model?: string
   status?: string
   type?: number
@@ -345,6 +363,7 @@ export interface ChannelFormData {
   openai_organization?: string
   models: string
   group: string
+  category?: string
   model_mapping?: string
   priority?: number
   weight?: number

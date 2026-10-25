@@ -25,6 +25,7 @@ import type {
   BatchSetTagParams,
   Channel,
   ChannelBalanceResponse,
+  ChannelCategoriesResponse,
   ChannelOpsResponse,
   ChannelTestResponse,
   CopyChannelParams,
@@ -110,6 +111,38 @@ export async function getChannel(id: number): Promise<GetChannelResponse> {
  */
 export async function getChannelOps(): Promise<ChannelOpsResponse> {
   const res = await api.get('/api/channel/ops', channelActionConfig())
+  return res.data
+}
+
+export async function getChannelCategories(): Promise<ChannelCategoriesResponse> {
+  const res = await api.get('/api/channel/categories')
+  return res.data
+}
+
+export async function createChannelCategory(
+  name: string
+): Promise<{ success: boolean; message?: string }> {
+  const res = await api.post(
+    '/api/channel/categories',
+    { name },
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function assignChannelCategory(
+  ids: number[],
+  category: string
+): Promise<{
+  success: boolean
+  message?: string
+  data?: { updated: number }
+}> {
+  const res = await api.post(
+    '/api/channel/category/assign',
+    { ids, category },
+    channelActionConfig()
+  )
   return res.data
 }
 

@@ -77,6 +77,7 @@ function ChannelCardComponent({
   const balanceCell = renderCell('balance')
   const responseCell = renderCell('response_time')
   const testCell = renderCell('test_time')
+  const categoryCell = renderCell('category')
 
   const labelClass = 'text-muted-foreground text-[11px] font-medium select-none'
 
@@ -156,10 +157,11 @@ function ChannelCardComponent({
           </div>
         </div>
 
-        {/* Last row: groups span the full width, showing every group (no label) */}
-        <div className='min-w-0'>
+        {/* Last row: admin category first, followed by routing groups. */}
+        <div className='flex min-w-0 flex-wrap items-center gap-2'>
+          {categoryCell}
           {groups.length > 0 ? (
-            <div className='-ml-1.5 flex flex-wrap gap-1'>
+            <div className='flex flex-wrap gap-1'>
               {groups.map((g) => (
                 <GroupBadge
                   key={g}

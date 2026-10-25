@@ -39,3 +39,15 @@ skills-lock.json
 .local-tests/
 service/relayconvert/chat_responses_live_local_test.go
 service/openaicompat/chat_responses_live_local_test.go
+
+# Production runtime secrets and local recovery files must stay outside Git.
+.env.*
+!.env.example
+!.env.custom.example
+*.bak-*
+*.codex-backup-*
+*.diag-feature-current
+._*
+/backups/
+/maintenance/
+/runtime/

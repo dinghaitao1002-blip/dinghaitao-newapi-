@@ -3,6 +3,7 @@ package ratio_setting
 import (
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -31,6 +32,7 @@ type GroupRatioSetting struct {
 	GroupRatio              *types.RWMap[string, float64]            `json:"group_ratio"`
 	GroupGroupRatio         *types.RWMap[string, map[string]float64] `json:"group_group_ratio"`
 	GroupSpecialUsableGroup *types.RWMap[string, map[string]string]  `json:"group_special_usable_group"`
+	GroupRatioSchedules     *types.RWMap[string, GroupRatioSchedule] `json:"group_ratio_schedules"`
 }
 
 var groupRatioSetting GroupRatioSetting
@@ -46,6 +48,7 @@ func init() {
 		GroupSpecialUsableGroup: groupSpecialUsableGroup,
 		GroupRatio:              groupRatioMap,
 		GroupGroupRatio:         groupGroupRatioMap,
+		GroupRatioSchedules:     groupRatioScheduleMap,
 	}
 
 	config.GlobalConfig.Register("group_ratio_setting", &groupRatioSetting)
@@ -60,7 +63,16 @@ func GetGroupRatioSetting() *GroupRatioSetting {
 }
 
 func GetGroupRatioCopy() map[string]float64 {
-	return groupRatioMap.ReadAll()
+	return GetGroupRatioCopyAt(time.Now())
+}
+
+// GetGroupRatioCopyAt returns effective display ratios without changing saved base ratios.
+func GetGroupRatioCopyAt(at time.Time) map[string]float64 {
+	ratios := groupRatioMap.ReadAll()
+	for name, ratio := range ratios {
+		ratios[name] = applyGroupRatioSchedule(name, ratio, at)
+	}
+	return ratios
 }
 
 func ContainsGroupRatio(name string) bool {
@@ -77,15 +89,23 @@ func UpdateGroupRatioByJSONString(jsonStr string) error {
 }
 
 func GetGroupRatio(name string) float64 {
+	return GetGroupRatioAt(name, time.Now())
+}
+
+func GetGroupRatioAt(name string, at time.Time) float64 {
 	ratio, ok := groupRatioMap.Get(name)
 	if !ok {
 		common.SysLog("group ratio not found: " + name)
 		return 1
 	}
-	return ratio
+	return applyGroupRatioSchedule(name, ratio, at)
 }
 
 func GetGroupGroupRatio(userGroup, usingGroup string) (float64, bool) {
+	return GetGroupGroupRatioAt(userGroup, usingGroup, time.Now())
+}
+
+func GetGroupGroupRatioAt(userGroup, usingGroup string, at time.Time) (float64, bool) {
 	gp, ok := groupGroupRatioMap.Get(userGroup)
 	if !ok {
 		return -1, false
@@ -94,7 +114,7 @@ func GetGroupGroupRatio(userGroup, usingGroup string) (float64, bool) {
 	if !ok {
 		return -1, false
 	}
-	return ratio, true
+	return applyGroupRatioSchedule(usingGroup, ratio, at), true
 }
 
 func GroupGroupRatio2JSONString() string {

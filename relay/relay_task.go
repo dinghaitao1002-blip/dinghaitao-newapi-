@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel"
+	tasksora "github.com/QuantumNous/new-api/relay/channel/task/sora"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -150,7 +151,14 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if platform == "" {
 		platform = GetTaskPlatform(c)
 	}
+	useMiniMaxH3OpenAI := info.ChannelType == constant.ChannelTypeMiniMax && isMiniMaxH3OpenAIVideo(info.OriginModelName)
 	adaptor := GetTaskAdaptor(platform)
+	// MiniMax channels normally use the official Hailuo API. Some compatible
+	// upstreams expose the H3 933 series through OpenAI's /v1/videos contract,
+	// so route only those models through the Sora/OpenAI video passthrough.
+	if useMiniMaxH3OpenAI {
+		adaptor = &tasksora.TaskAdaptor{}
+	}
 	if adaptor == nil {
 		return nil, service.TaskErrorWrapperLocal(fmt.Errorf("invalid api platform: %s", platform), "invalid_api_platform", http.StatusBadRequest)
 	}
@@ -251,12 +259,23 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 
+	resultPlatform := platform
+	if useMiniMaxH3OpenAI {
+		// Persist the protocol used for this task so background polling and
+		// client fetches continue through /v1/videos/{id}, not Hailuo's API.
+		resultPlatform = constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI))
+	}
+
 	return &TaskSubmitResult{
 		UpstreamTaskID: upstreamTaskID,
 		TaskData:       taskData,
-		Platform:       platform,
+		Platform:       resultPlatform,
 		Quota:          finalQuota,
 	}, nil
+}
+
+func isMiniMaxH3OpenAIVideo(modelName string) bool {
+	return strings.HasPrefix(strings.TrimSpace(modelName), "Minimax-H3-768p-933-")
 }
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
@@ -396,6 +415,9 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 	// OpenAI Video API 格式: 走各 adaptor 的 ConvertToOpenAIVideo
 	if isOpenAIVideoAPI {
 		adaptor := GetTaskAdaptor(originTask.Platform)
+		if isMiniMaxH3OpenAIVideo(originTask.Properties.OriginModelName) {
+			adaptor = &tasksora.TaskAdaptor{}
+		}
 		if adaptor == nil {
 			taskResp = service.TaskErrorWrapperLocal(fmt.Errorf("invalid channel id: %d", originTask.ChannelId), "invalid_channel_id", http.StatusBadRequest)
 			return

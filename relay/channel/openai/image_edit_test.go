@@ -54,10 +54,15 @@ func TestConvertImageEditRequestMultipart(t *testing.T) {
 
 		converted, err := (&Adaptor{}).ConvertImageRequest(c, info, request)
 		require.NoError(t, err)
-		convertedBody, ok := converted.(*bytes.Buffer)
+		convertedBody, ok := converted.(common.BodyStorage)
 		require.True(t, ok)
+		defer convertedBody.Close()
+		require.Equal(t, common.IsDiskCacheEnabled(), convertedBody.IsDisk(), "the rebuilt form follows the disk cache setting")
+		convertedBytes, err := io.ReadAll(convertedBody)
+		require.NoError(t, err)
+		require.EqualValues(t, len(convertedBytes), convertedBody.Size())
 
-		replayedRequest := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(convertedBody.Bytes()))
+		replayedRequest := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(convertedBytes))
 		replayedRequest.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 		require.NoError(t, replayedRequest.ParseMultipartForm(32<<20))
 
@@ -92,6 +97,20 @@ func TestConvertImageEditRequestMultipart(t *testing.T) {
 		c.Request.Body = io.NopCloser(storage)
 		c.Request.MultipartForm = nil
 		c.Request.PostForm = nil
+
+		convertAndReplay(t, c, prompt)
+	})
+
+	// Deliberately not parallel: it lowers the global disk-cache threshold so
+	// the rebuilt form is spooled to a cache file instead of the heap.
+	t.Run("spools the rebuilt form to disk when the disk cache accepts it", func(t *testing.T) {
+		prev := common.GetDiskCacheConfig()
+		common.SetDiskCacheConfig(common.DiskCacheConfig{Enabled: true, ThresholdMB: 0, MaxSizeMB: 64, Path: t.TempDir()})
+		defer common.SetDiskCacheConfig(prev)
+
+		prompt := "edit from disk"
+		c := newMultipartContext(t, prompt)
+		require.NoError(t, c.Request.ParseMultipartForm(32<<20))
 
 		convertAndReplay(t, c, prompt)
 	})

@@ -68,7 +68,13 @@ import {
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
 import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
-import { formatFixedPrice, formatGroupPrice } from '../lib/price'
+import {
+  formatFixedPrice,
+  formatGroupPrice,
+  formatVideoSecondGroupPrice,
+  formatVideoSecondPrice,
+  isVideoPerSecondModel,
+} from '../lib/price'
 import type {
   ModelCapability,
   PriceType,
@@ -574,7 +580,8 @@ function PriceSection(props: {
   showRechargePrice: boolean
 }) {
   const { t } = useTranslation()
-  const isTokenBased = isTokenBasedModel(props.model)
+  const isVideoPerSecond = isVideoPerSecondModel(props.model)
+  const isTokenBased = !isVideoPerSecond && isTokenBasedModel(props.model)
   const tokenUnitLabel = props.tokenUnit === 'K' ? '1K' : '1M'
   const baseGroupKey = '_base'
   const baseGroupRatioMap = { [baseGroupKey]: 1 }
@@ -702,6 +709,35 @@ function PriceSection(props: {
     )
   }
 
+  if (isVideoPerSecond) {
+    return (
+      <section>
+        <SectionTitle>{t('Base Price')}</SectionTitle>
+        <div className='grid grid-cols-2 gap-2 sm:grid-cols-4'>
+          {(['480p', '720p', '1080p', '4k'] as const).map((resolution) => (
+            <div key={resolution} className='bg-muted/20 rounded-lg border p-3'>
+              <div className='text-muted-foreground text-xs'>
+                {resolution === '4k' ? '4K' : resolution}
+              </div>
+              <div className='text-foreground mt-1 font-mono text-base font-semibold tabular-nums'>
+                {formatVideoSecondPrice(
+                  props.model,
+                  resolution,
+                  props.showRechargePrice,
+                  props.priceRate,
+                  props.usdExchangeRate
+                )}
+                <span className='text-muted-foreground/40 ml-1 text-xs font-normal'>
+                  / {t('second')}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    )
+  }
+
   if (!isTokenBased) {
     return (
       <section>
@@ -783,6 +819,65 @@ function PriceSection(props: {
 // ----------------------------------------------------------------------------
 // Auto group chain (used inside group pricing section)
 // ----------------------------------------------------------------------------
+
+function ImageQualityPricingSection(props: { model: PricingModel }) {
+  const { t } = useTranslation()
+  const prices = props.model.image_quality_prices || []
+  if (!props.model.image_quality_pricing_enabled || prices.length === 0) {
+    return null
+  }
+
+  const getPrice = (quality: string, resolution: string) => {
+    const item = prices.find(
+      (p) => p.quality === quality && p.resolution === resolution && p.enabled
+    )
+    return item ? item.price : '-'
+  }
+
+  const qualities = ['low', 'medium', 'high'] as const
+  const resolutions = ['1k', '2k', '4k'] as const
+
+  return (
+    <div className='space-y-3 rounded-lg border p-3'>
+      <div className='flex items-center justify-between gap-2'>
+        <div>
+          <div className='text-sm font-medium'>{t('按图片品质收费')}</div>
+          <p className='text-muted-foreground text-xs'>
+            {t('实际费用根据请求中的图片品质、分辨率和生成数量计算。')}
+          </p>
+        </div>
+        <span className='rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300'>
+          {t('按品质收费')}
+        </span>
+      </div>
+
+      <div className='overflow-hidden rounded-md border text-sm'>
+        <div className='bg-muted/60 grid grid-cols-4 font-medium'>
+          <div className='px-3 py-2'>{t('品质')}</div>
+          {resolutions.map((resolution) => (
+            <div key={resolution} className='px-3 py-2 uppercase'>
+              {resolution}
+            </div>
+          ))}
+        </div>
+        {qualities.map((quality) => (
+          <div key={quality} className='grid grid-cols-4 border-t'>
+            <div className='px-3 py-2 font-medium'>{quality}</div>
+            {resolutions.map((resolution) => (
+              <div key={`${quality}-${resolution}`} className='px-3 py-2 font-mono'>
+                {getPrice(quality, resolution)}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+
+      <p className='text-muted-foreground text-xs'>
+        {t('最终费用 = 对应品质分辨率单价 × 图片数量 n。')}
+      </p>
+    </div>
+  )
+}
 
 function AutoGroupChain(props: { model: PricingModel; autoGroups: string[] }) {
   const { t } = useTranslation()
@@ -867,7 +962,8 @@ function GroupPricingSection(props: {
     [props.model, props.usableGroup]
   )
 
-  const isTokenBased = isTokenBasedModel(props.model)
+  const isVideoPerSecond = isVideoPerSecondModel(props.model)
+  const isTokenBased = !isVideoPerSecond && isTokenBasedModel(props.model)
   const tokenUnitLabel = props.tokenUnit === 'K' ? '1K' : '1M'
 
   const extraPriceTypes = useMemo(() => {
@@ -1041,6 +1137,19 @@ function GroupPricingSection(props: {
       props.usdExchangeRate,
       props.groupRatio
     )
+  const renderVideoSecondGroupPrice = (
+    group: string,
+    resolution: '480p' | '720p' | '1080p' | '4k'
+  ) =>
+    formatVideoSecondGroupPrice(
+      props.model,
+      group,
+      resolution,
+      showRechargePrice,
+      props.priceRate,
+      props.usdExchangeRate,
+      props.groupRatio
+    )
 
   return (
     <section>
@@ -1067,39 +1176,54 @@ function GroupPricingSection(props: {
             cellClassName: 'text-muted-foreground py-2.5 font-mono',
             cell: (group) => `${props.groupRatio[group] || 1}x`,
           },
-          ...(isTokenBased
-            ? [
-                {
-                  id: 'input',
-                  header: t('Input'),
-                  className: `${thClass} text-right`,
-                  cellClassName: 'py-2.5 text-right font-mono',
-                  cell: (group: string) => renderGroupPrice(group, 'input'),
-                },
-                {
-                  id: 'output',
-                  header: t('Output'),
-                  className: `${thClass} text-right`,
-                  cellClassName: 'py-2.5 text-right font-mono',
-                  cell: (group: string) => renderGroupPrice(group, 'output'),
-                },
-                ...extraPriceTypes.map((ep) => ({
-                  id: ep.type,
-                  header: ep.label,
-                  className: `${thClass} text-right`,
-                  cellClassName: 'py-2.5 text-right font-mono',
-                  cell: (group: string) => renderGroupPrice(group, ep.type),
-                })),
-              ]
-            : [
-                {
-                  id: 'price',
-                  header: t('Price'),
-                  className: `${thClass} text-right`,
-                  cellClassName: 'py-2.5 text-right font-mono',
-                  cell: renderFixedGroupPrice,
-                },
-              ]),
+          ...(isVideoPerSecond
+            ? (['480p', '720p', '1080p', '4k'] as const).map((resolution) => ({
+                id: resolution,
+                header: resolution === '4k' ? '4K' : resolution,
+                className: `${thClass} text-right`,
+                cellClassName: 'py-2.5 text-right font-mono',
+                cell: (group: string) => (
+                  <>
+                    {renderVideoSecondGroupPrice(group, resolution)}
+                    <span className='text-muted-foreground/40 ml-1 text-xs font-normal'>
+                      / {t('second')}
+                    </span>
+                  </>
+                ),
+              }))
+            : isTokenBased
+              ? [
+                  {
+                    id: 'input',
+                    header: t('Input'),
+                    className: `${thClass} text-right`,
+                    cellClassName: 'py-2.5 text-right font-mono',
+                    cell: (group: string) => renderGroupPrice(group, 'input'),
+                  },
+                  {
+                    id: 'output',
+                    header: t('Output'),
+                    className: `${thClass} text-right`,
+                    cellClassName: 'py-2.5 text-right font-mono',
+                    cell: (group: string) => renderGroupPrice(group, 'output'),
+                  },
+                  ...extraPriceTypes.map((ep) => ({
+                    id: ep.type,
+                    header: ep.label,
+                    className: `${thClass} text-right`,
+                    cellClassName: 'py-2.5 text-right font-mono',
+                    cell: (group: string) => renderGroupPrice(group, ep.type),
+                  })),
+                ]
+              : [
+                  {
+                    id: 'price',
+                    header: t('Price'),
+                    className: `${thClass} text-right`,
+                    cellClassName: 'py-2.5 text-right font-mono',
+                    cell: renderFixedGroupPrice,
+                  },
+                ]),
         ]}
       />
       <div className='-mx-4 sm:mx-0'>
@@ -1178,6 +1302,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
               tokenUnit={props.tokenUnit}
               showRechargePrice={showRechargePrice}
             />
+            <ImageQualityPricingSection model={props.model} />
             {isDynamic && (
               <DynamicPricingBreakdown billingExpr={props.model.billing_expr} />
             )}

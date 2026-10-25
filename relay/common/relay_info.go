@@ -163,6 +163,13 @@ type RelayInfo struct {
 
 	PriceData types.PriceData
 
+	// Image quality pricing metadata is populated only when a public or
+	// user-private quality/resolution price is actually selected.
+	ImageQualityPriceSource string
+	ImageQuality            string
+	ImageResolution         string
+	ImageQualityUnitPrice   float64
+
 	// QuotaClamp is set (non-nil) when a quota conversion saturated at the
 	// int32 bound (or NaN fallback) while computing this request's charge.
 	// It is surfaced onto the consume/task log's admin_info for auditing.
@@ -720,6 +727,7 @@ type TaskSubmitReq struct {
 	Size           string                 `json:"size,omitempty"`
 	Duration       int                    `json:"duration,omitempty"`
 	Seconds        string                 `json:"seconds,omitempty"`
+	Resolution     string                 `json:"resolution,omitempty"`
 	InputReference string                 `json:"input_reference,omitempty"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
 }
@@ -801,6 +809,8 @@ type TaskInfo struct {
 	Url              string `json:"url,omitempty"`
 	RemoteUrl        string `json:"remote_url,omitempty"`
 	Progress         string `json:"progress,omitempty"`
+	Seconds          int    `json:"seconds,omitempty"`
+	Resolution       string `json:"resolution,omitempty"`
 	CompletionTokens int    `json:"completion_tokens,omitempty"` // 用于按倍率计费
 	TotalTokens      int    `json:"total_tokens,omitempty"`      // 用于按倍率计费
 }

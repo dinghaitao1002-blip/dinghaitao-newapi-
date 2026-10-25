@@ -1547,3 +1547,293 @@ func UpdateUserSetting(c *gin.Context) {
 
 	common.ApiSuccessI18n(c, i18n.MsgSettingSaved, nil)
 }
+
+// UserModelPriceRequest is used by admin to set per-user private model price.
+type UserModelPriceRequest struct {
+	ModelName string  `json:"model_name"`
+	Price     float64 `json:"price"`
+	Enabled   bool    `json:"enabled"`
+}
+
+type UserModelImageQualityPriceRequest struct {
+	ModelName string                        `json:"model_name"`
+	Enabled   bool                          `json:"enabled"`
+	Prices    []model.ImageQualityPriceItem `json:"prices"`
+}
+
+func canManageUserPrivatePricing(c *gin.Context, userId int) bool {
+	user, err := model.GetUserById(userId, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return false
+	}
+	myRole := c.GetInt("role")
+	if !canManageTargetRole(myRole, user.Role) {
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
+		return false
+	}
+	return true
+}
+
+func isImageQualityPrivatePriceAllowedModel(modelName string) bool {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return false
+	}
+	for _, p := range model.GetPricing() {
+		if p.ModelName != modelName {
+			continue
+		}
+		// 当前用户普通密价只允许固定/按次模型；品质密价也先遵守这个限制，避免影响 token 模型。
+		if p.QuotaType != 1 {
+			return false
+		}
+		// 如果模型同步里有 endpoint 类型，则优先要求 image 相关类型。
+		for _, endpointType := range p.SupportedEndpointTypes {
+			et := strings.ToLower(strings.TrimSpace(string(endpointType)))
+			if strings.Contains(et, "image") || strings.Contains(et, "images") {
+				return true
+			}
+		}
+		// 兼容旧数据：有些二开模型没有 endpoint_types，这里用模型名兜底识别常见生图模型。
+		lowerName := strings.ToLower(modelName)
+		return strings.Contains(lowerName, "image") ||
+			strings.Contains(lowerName, "dall") ||
+			strings.Contains(lowerName, "flux") ||
+			strings.Contains(lowerName, "mj") ||
+			strings.Contains(lowerName, "midjourney")
+	}
+	return false
+}
+
+func GetUserModelPrices(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	user, err := model.GetUserById(id, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	myRole := c.GetInt("role")
+	if !canManageTargetRole(myRole, user.Role) {
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
+		return
+	}
+
+	prices, err := model.GetUserModelPrices(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	common.ApiSuccess(c, prices)
+}
+
+func UpsertUserModelPrice(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	user, err := model.GetUserById(id, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	myRole := c.GetInt("role")
+	if !canManageTargetRole(myRole, user.Role) {
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
+		return
+	}
+
+	var req UserModelPriceRequest
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	modelName, price, err := model.NormalizeUserModelPriceInput(req.ModelName, req.Price)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// Only allow private pricing for fixed/per-call models.
+	isPerCall := false
+	for _, p := range model.GetPricing() {
+		if p.ModelName == modelName && p.QuotaType == 1 {
+			isPerCall = true
+			break
+		}
+	}
+	if !isPerCall {
+		common.ApiError(c, errors.New("only fixed/per-call priced models can use private price"))
+		return
+	}
+
+	if err := model.UpsertUserModelPrice(id, modelName, price, req.Enabled); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	recordManageAuditFor(c, id, "user.model_price.upsert", map[string]interface{}{
+		"user_id":    id,
+		"model_name": modelName,
+		"price":      price,
+		"enabled":    req.Enabled,
+	})
+
+	common.ApiSuccess(c, nil)
+}
+
+func DeleteUserModelPrice(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	user, err := model.GetUserById(id, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	myRole := c.GetInt("role")
+	if !canManageTargetRole(myRole, user.Role) {
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
+		return
+	}
+
+	modelName := c.Query("model_name")
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	if err := model.DeleteUserModelPrice(id, modelName); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	recordManageAuditFor(c, id, "user.model_price.delete", map[string]interface{}{
+		"user_id":    id,
+		"model_name": modelName,
+	})
+
+	common.ApiSuccess(c, nil)
+}
+
+func GetPerCallPricedModels(c *gin.Context) {
+	items := make([]gin.H, 0)
+	for _, p := range model.GetPricing() {
+		if p.QuotaType != 1 {
+			continue
+		}
+		items = append(items, gin.H{
+			"model_name":               p.ModelName,
+			"model_price":              p.ModelPrice,
+			"enable_groups":            p.EnableGroup,
+			"supported_endpoint_types": p.SupportedEndpointTypes,
+			"description":              p.Description,
+			"icon":                     p.Icon,
+			"tags":                     p.Tags,
+			"vendor_id":                p.VendorID,
+		})
+	}
+	common.ApiSuccess(c, items)
+}
+
+func GetUserModelImageQualityPrices(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	if !canManageUserPrivatePricing(c, id) {
+		return
+	}
+
+	modelName := strings.TrimSpace(c.Query("model_name"))
+	prices, err := model.GetUserModelImageQualityPrices(id, modelName)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, prices)
+}
+
+func SaveUserModelImageQualityPrices(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	if !canManageUserPrivatePricing(c, id) {
+		return
+	}
+
+	var req UserModelImageQualityPriceRequest
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	req.ModelName = strings.TrimSpace(req.ModelName)
+	if req.ModelName == "" {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	if !isImageQualityPrivatePriceAllowedModel(req.ModelName) {
+		common.ApiError(c, errors.New("only image fixed/per-call priced models can use image quality private price"))
+		return
+	}
+
+	if err := model.SaveUserModelImageQualityPrices(id, req.ModelName, req.Prices, req.Enabled); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	recordManageAuditFor(c, id, "user.model_image_quality_price.save", map[string]interface{}{
+		"user_id":    id,
+		"model_name": req.ModelName,
+		"enabled":    req.Enabled,
+		"count":      len(req.Prices),
+	})
+
+	common.ApiSuccess(c, nil)
+}
+
+func DeleteUserModelImageQualityPrices(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	if !canManageUserPrivatePricing(c, id) {
+		return
+	}
+
+	modelName := strings.TrimSpace(c.Query("model_name"))
+	if modelName == "" {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	if err := model.DeleteUserModelImageQualityPrices(id, modelName); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	recordManageAuditFor(c, id, "user.model_image_quality_price.delete", map[string]interface{}{
+		"user_id":    id,
+		"model_name": modelName,
+	})
+
+	common.ApiSuccess(c, nil)
+}

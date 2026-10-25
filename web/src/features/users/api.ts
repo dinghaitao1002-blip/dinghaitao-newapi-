@@ -28,6 +28,10 @@ import type {
   ManageUserAction,
   ManageUserQuotaPayload,
   ApiResponse,
+  UserModelPrice,
+  PerCallPricedModel,
+  ImageQualityPriceItem,
+  UserModelImageQualityPrice,
 } from './types'
 
 // ============================================================================
@@ -215,6 +219,81 @@ export async function adminUnbindCustomOAuth(
 ): Promise<ApiResponse> {
   const res = await api.delete(
     `/api/user/${userId}/oauth/bindings/${providerId}`
+  )
+  return res.data
+}
+
+
+// ============================================================================
+// User Private Model Pricing APIs
+// ============================================================================
+
+export async function getUserModelPrices(
+  userId: number
+): Promise<ApiResponse<UserModelPrice[]>> {
+  const res = await api.get(`/api/user/${userId}/model-prices`)
+  return res.data
+}
+
+export async function upsertUserModelPrice(
+  userId: number,
+  payload: { model_name: string; price: number; enabled: boolean }
+): Promise<ApiResponse> {
+  const res = await api.post(`/api/user/${userId}/model-prices`, payload)
+  return res.data
+}
+
+export async function deleteUserModelPrice(
+  userId: number,
+  modelName: string
+): Promise<ApiResponse> {
+  const res = await api.delete(`/api/user/${userId}/model-prices`, {
+    params: { model_name: modelName },
+  })
+  return res.data
+}
+
+export async function getPerCallPricedModels(): Promise<
+  ApiResponse<PerCallPricedModel[]>
+> {
+  const res = await api.get('/api/user/model-prices/per-call-models')
+  return res.data
+}
+
+export async function getUserModelImageQualityPrices(
+  userId: number,
+  modelName?: string
+): Promise<ApiResponse<UserModelImageQualityPrice[]>> {
+  const res = await api.get(`/api/user/${userId}/model-image-quality-prices`, {
+    params: modelName ? { model_name: modelName } : undefined,
+  })
+  return res.data
+}
+
+export async function saveUserModelImageQualityPrices(
+  userId: number,
+  payload: {
+    model_name: string
+    enabled: boolean
+    prices: ImageQualityPriceItem[]
+  }
+): Promise<ApiResponse> {
+  const res = await api.post(
+    `/api/user/${userId}/model-image-quality-prices`,
+    payload
+  )
+  return res.data
+}
+
+export async function deleteUserModelImageQualityPrices(
+  userId: number,
+  modelName: string
+): Promise<ApiResponse> {
+  const res = await api.delete(
+    `/api/user/${userId}/model-image-quality-prices`,
+    {
+      params: { model_name: modelName },
+    }
   )
   return res.data
 }

@@ -50,6 +50,7 @@ const USER_SORTABLE_COLUMNS = new Set<UserSortBy>([
   'id',
   'username',
   'quota',
+  'used_quota',
   'group',
   'created_at',
   'last_login_at',
@@ -64,7 +65,10 @@ export function UsersTable() {
   const columns = useUsersColumns()
   const { refreshTrigger } = useUsers()
   const isMobile = useMediaQuery('(max-width: 640px)')
-  const [sorting, setSorting] = useState<SortingState>([])
+  // Surface the highest-spending users first so low-balance accounts are easy to spot.
+  const [sorting, setSorting] = useState<SortingState>([
+    { id: 'used_quota', desc: true },
+  ])
 
   const {
     globalFilter,

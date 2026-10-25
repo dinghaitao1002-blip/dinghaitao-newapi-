@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,38 +23,95 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// updateOpenAIImageCount settles the fixed-price image count on what upstream
+// returned, but never above the count the client requested: an upstream that
+// answers n=1 with several images (a ChatGPT-backed channel occasionally
+// returns two variants plus the reference image) must not raise the charge.
 func updateOpenAIImageCount(info *relaycommon.RelayInfo, count int64) {
 	if info == nil || !info.PriceData.UsePrice || count <= 0 || count > int64(dto.MaxImageN) {
+		return
+	}
+	requestedN := 1.0
+	if n, ok := info.PriceData.OtherRatios()["n"]; ok {
+		requestedN = n
+	}
+	if float64(count) > requestedN {
 		return
 	}
 	info.PriceData.AddOtherRatio("n", float64(count))
 }
 
+// imageResponseBufferLimit is the largest non-streaming image response that is
+// buffered whole before it is forwarded. Error payloads and url-format
+// responses fit inside it and keep the buffered path, where a body-level
+// error can still be turned into an error response. Anything larger carries
+// base64 image data and is forwarded as it arrives.
+const imageResponseBufferLimit = 256 << 10
+
+// imageResponseStringLimit bounds the bytes kept per JSON string in the
+// skeleton that stands in for a forwarded body: long enough for prompts and
+// urls to survive intact, short enough that b64_json payloads shrink to a
+// non-empty stub.
+const imageResponseStringLimit = 4 << 10
+
 // OpenaiImageHandler handles non-streaming OpenAI image responses
 // (generations/edits), returning the parsed usage for billing.
+//
+// A base64 image response is several megabytes that the relay only needs for
+// usage, the error object, and the image count. Rather than holding the whole
+// body, a large response is copied to the client as it arrives while a
+// jsonSkeletonWriter keeps a copy with every long string cut down; that
+// skeleton then feeds the same usage and count logic as a buffered body.
 func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
 
-	responseBody, err := io.ReadAll(resp.Body)
+	head, err := io.ReadAll(io.LimitReader(resp.Body, imageResponseBufferLimit+1))
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
+	if len(head) <= imageResponseBufferLimit {
+		usage, apiErr := openaiImageUsageFromBody(info, resp.StatusCode, head)
+		if apiErr != nil {
+			return nil, apiErr
+		}
+		// 写入新的 response body
+		service.IOCopyBytesGracefully(c, resp, head)
+		return usage, nil
+	}
 
+	skeleton := &jsonSkeletonWriter{limit: imageResponseStringLimit}
+	body := io.TeeReader(io.MultiReader(bytes.NewReader(head), resp.Body), skeleton)
+	for k, v := range resp.Header {
+		if service.ShouldCopyUpstreamHeader(c, k, v) {
+			c.Writer.Header().Set(k, v[0])
+		}
+	}
+	if resp.ContentLength > 0 {
+		c.Writer.Header().Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+	}
+	c.Writer.WriteHeader(resp.StatusCode)
+	if _, err := io.Copy(c.Writer, body); err != nil {
+		logger.LogError(c, fmt.Sprintf("failed to copy response body: %s", err.Error()))
+		// The client is gone but upstream has produced the images: keep
+		// reading so usage and the image count reflect what was generated.
+		_, _ = io.Copy(io.Discard, body)
+	}
+	c.Writer.Flush()
+	return openaiImageUsageFromBody(info, resp.StatusCode, skeleton.Bytes())
+}
+
+// openaiImageUsageFromBody decodes usage and the image count from an
+// OpenAI-format image response body, or the skeleton of one, and reports a
+// body-level error object as the upstream error.
+func openaiImageUsageFromBody(info *relaycommon.RelayInfo, statusCode int, responseBody []byte) (*dto.Usage, *types.NewAPIError) {
 	var usageResp dto.SimpleResponse
-	err = common.Unmarshal(responseBody, &usageResp)
-	if err != nil {
+	if err := common.Unmarshal(responseBody, &usageResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+		return nil, types.WithOpenAIError(*oaiError, statusCode)
 	}
-
 	updateOpenAIImageCount(info, gjson.GetBytes(responseBody, "data.#").Int())
-
-	// 写入新的 response body
-	service.IOCopyBytesGracefully(c, resp, responseBody)
-
 	normalizeOpenAIUsage(&usageResp.Usage)
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 	return &usageResp.Usage, nil
@@ -150,17 +208,13 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	// On client-side aborts (client_gone, or handler_stop from a failed client
 	// write) the counter undercounts what upstream actually generated and
 	// charged, so keep the requested n — otherwise a client could pay for one
-	// image by disconnecting right after the first completed event. The abort
-	// guard only blocks lowering the charge: if completed events already
-	// exceed the recorded n, bill the higher actual count regardless.
+	// image by disconnecting right after the first completed event. Completed
+	// events beyond the requested n never raise the charge
+	// (updateOpenAIImageCount caps at the requested count).
 	if info.StreamStatus != nil {
 		upstreamFinished := info.StreamStatus.EndReason == relaycommon.StreamEndReasonDone ||
 			info.StreamStatus.EndReason == relaycommon.StreamEndReasonEOF
-		requestedN := 1.0
-		if n, ok := info.PriceData.OtherRatios()["n"]; ok {
-			requestedN = n
-		}
-		if upstreamFinished || float64(completedImages) > requestedN {
+		if upstreamFinished {
 			updateOpenAIImageCount(info, completedImages)
 		}
 	}

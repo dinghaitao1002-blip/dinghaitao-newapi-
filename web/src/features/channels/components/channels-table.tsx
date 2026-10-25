@@ -62,6 +62,7 @@ import {
 } from '../lib'
 import type { Channel, ChannelSortBy } from '../types'
 import { ChannelCard } from './channel-card'
+import { ChannelCategoryBar } from './channel-category-bar'
 import { useChannelsColumns } from './channels-columns'
 import { useChannels } from './channels-provider'
 import { DataTableBulkActions } from './data-table-bulk-actions'
@@ -133,6 +134,7 @@ export function ChannelsTable() {
       },
       { columnId: 'type', searchKey: 'type', type: 'array' },
       { columnId: 'group', searchKey: 'group', type: 'array' },
+      { columnId: 'category', searchKey: 'category', type: 'array' },
       { columnId: 'model', searchKey: 'model', type: 'string' },
     ],
   })
@@ -162,6 +164,8 @@ export function ChannelsTable() {
   )
   const groupFilter =
     (columnFilters.find((f) => f.id === 'group')?.value as string[]) || []
+  const categoryFilter =
+    (columnFilters.find((f) => f.id === 'category')?.value as string[]) || []
   const {
     value: modelFilter,
     inputValue: modelFilterInput,
@@ -228,6 +232,10 @@ export function ChannelsTable() {
         groupFilter.length > 0 && !groupFilter.includes('all')
           ? groupFilter[0]
           : undefined,
+      category:
+        categoryFilter.length > 0 && !categoryFilter.includes('all')
+          ? categoryFilter[0]
+          : undefined,
       status:
         statusFilter.length > 0 && !statusFilter.includes('all')
           ? statusFilter[0]
@@ -251,6 +259,10 @@ export function ChannelsTable() {
             groupFilter.length > 0 && !groupFilter.includes('all')
               ? groupFilter[0]
               : undefined,
+          category:
+            categoryFilter.length > 0 && !categoryFilter.includes('all')
+              ? categoryFilter[0]
+              : undefined,
           status:
             statusFilter.length > 0 && !statusFilter.includes('all')
               ? statusFilter[0]
@@ -270,6 +282,10 @@ export function ChannelsTable() {
           group:
             groupFilter.length > 0 && !groupFilter.includes('all')
               ? groupFilter[0]
+              : undefined,
+          category:
+            categoryFilter.length > 0 && !categoryFilter.includes('all')
+              ? categoryFilter[0]
               : undefined,
           status:
             statusFilter.length > 0 && !statusFilter.includes('all')
@@ -303,6 +319,7 @@ export function ChannelsTable() {
 
   const totalCount = data?.data?.total || 0
   const typeCounts = data?.data?.type_counts
+  const categoryCounts = data?.data?.category_counts
 
   // Columns configuration
   const columns = useChannelsColumns({ enableSelection: batchMode })
@@ -462,24 +479,35 @@ export function ChannelsTable() {
           },
         ],
         preActions: (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant='ghost'
-                  size='icon'
-                  onClick={() => setSensitiveVisible(!sensitiveVisible)}
-                  aria-label={sensitiveVisible ? t('Hide') : t('Show')}
-                  className='text-muted-foreground hover:text-foreground size-8'
-                />
-              }
-            >
-              {sensitiveVisible ? <Eye /> : <EyeOff />}
-            </TooltipTrigger>
-            <TooltipContent>
-              {sensitiveVisible ? t('Hide') : t('Show')}
-            </TooltipContent>
-          </Tooltip>
+          <>
+            <ChannelCategoryBar
+              selectedCategory={categoryFilter[0] || 'all'}
+              categoryCounts={categoryCounts}
+              onSelect={(category) => {
+                table
+                  .getColumn('category')
+                  ?.setFilterValue(category === 'all' ? undefined : [category])
+              }}
+            />
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant='ghost'
+                    size='icon'
+                    onClick={() => setSensitiveVisible(!sensitiveVisible)}
+                    aria-label={sensitiveVisible ? t('Hide') : t('Show')}
+                    className='text-muted-foreground hover:text-foreground size-8'
+                  />
+                }
+              >
+                {sensitiveVisible ? <Eye /> : <EyeOff />}
+              </TooltipTrigger>
+              <TooltipContent>
+                {sensitiveVisible ? t('Hide') : t('Show')}
+              </TooltipContent>
+            </Tooltip>
+          </>
         ),
       }}
       getRowClassName={(row, { isMobile }) => {

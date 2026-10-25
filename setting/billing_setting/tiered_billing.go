@@ -1,7 +1,9 @@
 package billing_setting
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -9,11 +11,20 @@ import (
 )
 
 const (
-	BillingModeRatio      = "ratio"
-	BillingModeTieredExpr = "tiered_expr"
-	BillingModeField      = "billing_mode"
-	BillingExprField      = "billing_expr"
+	BillingModeRatio          = "ratio"
+	BillingModeTieredExpr     = "tiered_expr"
+	BillingModeVideoPerSecond = "video_per_second"
+	BillingModeImageQuality   = "image_quality"
+	BillingModeField          = "billing_mode"
+	BillingExprField          = "billing_expr"
 )
+
+type VideoSecondPrices struct {
+	P480  float64 `json:"480p"`
+	P720  float64 `json:"720p"`
+	P1080 float64 `json:"1080p"`
+	P4K   float64 `json:"4k"`
+}
 
 // BillingSetting is managed by config.GlobalConfig.Register.
 // DB keys: billing_setting.billing_mode, billing_setting.billing_expr
@@ -103,4 +114,58 @@ func smokeTestExpr(exprStr string) error {
 		}
 	}
 	return nil
+}
+
+func GetVideoSecondPrices(model string) (VideoSecondPrices, bool) {
+	expr, ok := GetBillingExpr(model)
+	if !ok || strings.TrimSpace(expr) == "" {
+		return VideoSecondPrices{}, false
+	}
+
+	var prices VideoSecondPrices
+	if err := json.Unmarshal([]byte(expr), &prices); err != nil {
+		return VideoSecondPrices{}, false
+	}
+	if prices.P480 < 0 || prices.P720 < 0 || prices.P1080 < 0 || prices.P4K < 0 {
+		return VideoSecondPrices{}, false
+	}
+	return prices, prices.P480 > 0 || prices.P720 > 0 || prices.P1080 > 0 || prices.P4K > 0
+}
+
+func GetVideoSecondPrice(model, resolution string) (float64, bool) {
+	prices, ok := GetVideoSecondPrices(model)
+	if !ok {
+		return 0, false
+	}
+
+	switch strings.ToLower(strings.TrimSpace(resolution)) {
+	case "4k", "2160p":
+		return prices.P4K, prices.P4K > 0
+	case "1080p":
+		return prices.P1080, prices.P1080 > 0
+	case "480p":
+		return prices.P480, prices.P480 > 0
+	default:
+		return prices.P720, prices.P720 > 0
+	}
+}
+
+func GetVideoSecondBasePrice(model string) (float64, bool) {
+	prices, ok := GetVideoSecondPrices(model)
+	if !ok {
+		return 0, false
+	}
+	if prices.P720 > 0 {
+		return prices.P720, true
+	}
+	if prices.P480 > 0 {
+		return prices.P480, true
+	}
+	if prices.P1080 > 0 {
+		return prices.P1080, true
+	}
+	if prices.P4K > 0 {
+		return prices.P4K, true
+	}
+	return 0, false
 }

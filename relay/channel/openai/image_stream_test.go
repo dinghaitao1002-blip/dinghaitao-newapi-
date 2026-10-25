@@ -2,6 +2,8 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -248,10 +251,11 @@ func TestOpenaiImageStreamHandlerClientDisconnectKeepsRequestedCount(t *testing.
 	require.Equal(t, 3.0, info.PriceData.OtherRatios()["n"], "client abort must not reduce the billed image count")
 }
 
-// TestOpenaiImageStreamHandlerClientDisconnectRaisesCount covers the other
-// direction of the abort guard: when completed events already exceed the
-// recorded n, the higher actual count is billed even though the client aborted.
-func TestOpenaiImageStreamHandlerClientDisconnectRaisesCount(t *testing.T) {
+// TestOpenaiImageStreamHandlerClientDisconnectKeepsCountBelowExtraEvents covers
+// the other direction of the abort guard: completed events beyond the
+// requested n are images the client never asked for, so they do not raise the
+// charge whether or not the client aborted.
+func TestOpenaiImageStreamHandlerClientDisconnectKeepsCountBelowExtraEvents(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
 	t.Cleanup(func() { gin.SetMode(oldMode) })
@@ -279,7 +283,66 @@ func TestOpenaiImageStreamHandlerClientDisconnectRaisesCount(t *testing.T) {
 	require.Contains(t,
 		[]relaycommon.StreamEndReason{relaycommon.StreamEndReasonClientGone, relaycommon.StreamEndReasonHandlerStop},
 		info.StreamStatus.EndReason)
-	require.Equal(t, 2.0, info.PriceData.OtherRatios()["n"], "completed events beyond the recorded n must raise the charge even on abort")
+	require.Equal(t, 1.0, info.PriceData.OtherRatios()["n"], "completed events beyond the requested n must not raise the charge")
+}
+
+// TestOpenaiImageBillingNeverExceedsRequestedCount guards the fixed-price
+// charge against an upstream that returns more images than the client asked
+// for (a ChatGPT-backed channel occasionally answers n=1 with two variants
+// plus the reference image). The response is forwarded as received on every
+// path, but only the requested count is billed.
+func TestOpenaiImageBillingNeverExceedsRequestedCount(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	const threeImages = `{"created":1710000000,"data":[{"b64_json":"first"},{"b64_json":"second"},{"b64_json":"third"}]}`
+	largeImage := strings.Repeat("a", imageResponseBufferLimit+1)
+	threeCompletedEvents := strings.Join([]string{
+		`data: {"type":"image_generation.completed","b64_json":"first"}`,
+		``,
+		`data: {"type":"image_generation.completed","b64_json":"second"}`,
+		``,
+		`data: {"type":"image_generation.completed","b64_json":"third"}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	tests := []struct {
+		name        string
+		body        string
+		contentType string
+		isStream    bool
+	}{
+		{name: "buffered JSON", body: threeImages, contentType: "application/json"},
+		{name: "forwarded large JSON", body: `{"data":[{"b64_json":"` + largeImage + `"},{"b64_json":"second"},{"b64_json":"third"}]}`, contentType: "application/json"},
+		{name: "JSON wrapped as stream", body: threeImages, contentType: "application/json", isStream: true},
+		{name: "SSE stream", body: threeCompletedEvents, contentType: "text/event-stream", isStream: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, recorder, resp, info := newImageTestContext(t, tt.body, tt.contentType, tt.isStream)
+			info.PriceData.UsePrice = true
+			info.PriceData.AddOtherRatio("n", 1)
+
+			handler := OpenaiImageHandler
+			if tt.isStream {
+				handler = OpenaiImageStreamHandler
+			}
+			_, err := handler(c, info, resp)
+
+			require.Nil(t, err)
+			assert.Equal(t, 1.0, info.PriceData.OtherRatios()["n"], "images beyond the requested n must not be billed")
+			assert.Contains(t, recorder.Body.String(), `"b64_json":"second"`)
+			assert.Contains(t, recorder.Body.String(), `"b64_json":"third"`)
+		})
+	}
 }
 
 // TestOpenaiImageStreamHandlerWrapsJSONResponse covers the non-SSE fallback:
@@ -446,4 +509,89 @@ func TestOpenaiImageStreamHandlerRecordsUpstreamErrorEvent(t *testing.T) {
 	// is still forwarded in the data: payload (stream ID 77).
 	require.Contains(t, recorder.Body.String(), `event: upstream_error`)
 	require.Contains(t, recorder.Body.String(), `stream ID 77`)
+}
+
+// TestJSONSkeletonWriterCutsLongStrings pins the skeleton contract the
+// forwarded-body path relies on: structure and short strings survive, long
+// strings keep a valid prefix, and the cut never lands inside an escape or a
+// multi-byte character, regardless of how the input is chunked.
+func TestJSONSkeletonWriterCutsLongStrings(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, want string
+		limit             int
+	}{
+		{name: "short strings and scalars unchanged", input: `{"a":"abcd","n":[1,2.5,true,null],"o":{}}`, want: `{"a":"abcd","n":[1,2.5,true,null],"o":{}}`, limit: 4},
+		{name: "long string keeps a prefix", input: `{"b64_json":"abcdefghijklmnop","next":1}`, want: `{"b64_json":"abcdefgh","next":1}`, limit: 8},
+		{name: "escaped quote inside a kept string", input: `{"a":"x\"y\\z"}`, want: `{"a":"x\"y\\z"}`, limit: 8},
+		{name: "cut lands before an escape, not inside it", input: `{"a":"abc\"def"}`, want: `{"a":"abc"}`, limit: 3},
+		{name: "unicode escape is kept whole", input: `{"a":"abécd"}`, want: `{"a":"abé"}`, limit: 3},
+		{name: "cut lands before a multi-byte rune", input: `{"a":"aébc"}`, want: `{"a":"a"}`, limit: 1},
+		{name: "cut lands after a multi-byte rune", input: `{"a":"éabc"}`, want: `{"a":"é"}`, limit: 1},
+		{name: "string containing braces stays a string", input: `{"a":"{[}]","b":"}"}`, want: `{"a":"{[","b":"}"}`, limit: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			whole := &jsonSkeletonWriter{limit: tc.limit}
+			_, err := whole.Write([]byte(tc.input))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(whole.Bytes()))
+			assert.True(t, json.Valid(whole.Bytes()), "skeleton must stay valid JSON")
+
+			byteWise := &jsonSkeletonWriter{limit: tc.limit}
+			for i := range len(tc.input) {
+				_, err := byteWise.Write([]byte(tc.input[i : i+1]))
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.want, string(byteWise.Bytes()), "chunking must not change the skeleton")
+		})
+	}
+}
+
+// TestOpenaiImageHandlerForwardsLargeBodyWhileCounting covers responses above
+// the buffering limit: the body reaches the client byte for byte with the
+// upstream length, while usage, the billed image count, and a body-level error
+// object are still derived from it.
+func TestOpenaiImageHandlerForwardsLargeBodyWhileCounting(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	require.Greater(t, imageResponseBufferLimit, imageResponseStringLimit)
+	largeImage := strings.Repeat("a", imageResponseBufferLimit+1)
+	const usageJSON = `{"input_tokens":10,"output_tokens":20,"total_tokens":30,"input_tokens_details":{"text_tokens":4,"image_tokens":6}}`
+
+	t.Run("forwards body and bills the real count", func(t *testing.T) {
+		body := `{"created":1700000000,"data":[{"b64_json":"` + largeImage + `","revised_prompt":"a \"quoted\" é prompt"},{"b64_json":"second"},{"revised_prompt":"no payload"}],"usage":` + usageJSON + `}`
+		c, recorder, resp, info := newImageTestContext(t, body, "application/json", false)
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("X-Upstream", "kept")
+		info.PriceData.UsePrice = true
+		info.PriceData.AddOtherRatio("n", 3)
+
+		usage, err := OpenaiImageHandler(c, info, resp)
+
+		require.Nil(t, err)
+		assert.Equal(t, body, recorder.Body.String())
+		assert.Equal(t, http.StatusOK, recorder.Code)
+		assert.Equal(t, fmt.Sprint(len(body)), recorder.Header().Get("Content-Length"))
+		assert.Equal(t, "kept", recorder.Header().Get("X-Upstream"))
+		// This tree bills every data entry (data.#), so the payload-less
+		// third entry still counts; the skeleton keeps the array shape intact.
+		assert.Equal(t, float64(3), info.PriceData.OtherRatios()["n"])
+		assert.Equal(t, 10, usage.PromptTokens)
+		assert.Equal(t, 20, usage.CompletionTokens)
+		assert.Equal(t, 30, usage.TotalTokens)
+		require.NotNil(t, usage.PromptTokensDetails)
+		assert.Equal(t, 6, usage.PromptTokensDetails.ImageTokens)
+	})
+
+	t.Run("body-level error after the images is still reported", func(t *testing.T) {
+		body := `{"data":[{"b64_json":"` + largeImage + `"}],"error":{"message":"late failure","type":"server_error"}}`
+		c, recorder, resp, info := newImageTestContext(t, body, "application/json", false)
+
+		usage, err := OpenaiImageHandler(c, info, resp)
+
+		require.Nil(t, usage)
+		require.NotNil(t, err)
+		assert.Equal(t, "late failure", err.ToOpenAIError().Message)
+		assert.Equal(t, body, recorder.Body.String(), "what upstream sent has already been forwarded")
+	})
 }

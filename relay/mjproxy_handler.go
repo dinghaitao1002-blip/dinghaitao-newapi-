@@ -589,16 +589,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		ChannelId:   c.GetInt("channel_id"),
 		Quota:       priceData.Quota,
 	}
-	if midjResponse.Code == 3 {
-		//无实例账号自动禁用渠道（No available account instance）
-		channel, err := model.GetChannelById(midjourneyTask.ChannelId, true)
-		if err != nil {
-			common.SysLog("get_channel_null: " + err.Error())
-		}
-		if channel.GetAutoBan() && common.AutomaticDisableChannelEnabled {
-			model.UpdateChannelStatus(midjourneyTask.ChannelId, "", 2, "No available account instance")
-		}
-	}
+	// Upstream account availability is a request error, never a manual-disable action.
 	if midjResponse.Code != 1 && midjResponse.Code != 21 && midjResponse.Code != 22 {
 		//非1-提交成功,21-任务已存在和22-排队中，则记录错误原因
 		midjourneyTask.FailReason = midjResponse.Description

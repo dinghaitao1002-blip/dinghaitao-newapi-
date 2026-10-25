@@ -194,6 +194,7 @@ func EstimateRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *rela
 		if err != nil {
 			return 0, fmt.Errorf("error parsing multipart form: %v", err)
 		}
+		defer multiForm.RemoveAll()
 		fileHeaders := multiForm.File["file"]
 		totalAudioToken := 0
 		for _, fileHeader := range fileHeaders {

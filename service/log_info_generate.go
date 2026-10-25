@@ -68,6 +68,25 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 	}
 }
 
+func appendImageQualityPricingInfo(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+	if relayInfo == nil || other == nil || relayInfo.ImageQualityPriceSource == "" {
+		return
+	}
+
+	other["price_source"] = relayInfo.ImageQualityPriceSource
+	other["quality"] = relayInfo.ImageQuality
+	other["resolution"] = relayInfo.ImageResolution
+	other["unit_price"] = relayInfo.ImageQualityUnitPrice
+
+	imageCount := float64(1)
+	if ratio, ok := relayInfo.PriceData.OtherRatios()["n"]; ok {
+		imageCount = ratio
+	} else if imageReq, ok := relayInfo.Request.(*dto.ImageRequest); ok && imageReq != nil && imageReq.N != nil && *imageReq.N > 0 {
+		imageCount = float64(*imageReq.N)
+	}
+	other["image_count"] = imageCount
+}
+
 func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, modelRatio, groupRatio, completionRatio float64,
 	cacheTokens int, cacheRatio float64, modelPrice float64, userGroupRatio float64) map[string]interface{} {
 	other := make(map[string]interface{})
@@ -114,6 +133,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendBillingInfo(relayInfo, other)
 	appendParamOverrideInfo(relayInfo, other)
 	appendStreamStatus(relayInfo, other)
+	appendImageQualityPricingInfo(relayInfo, other)
 	return other
 }
 

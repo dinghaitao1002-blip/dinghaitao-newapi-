@@ -44,6 +44,10 @@ export type ModelPricingSnapshot = {
   imageRatio?: string
   audioRatio?: string
   audioCompletionRatio?: string
+  videoPrice480p?: string
+  videoPrice720p?: string
+  videoPrice1080p?: string
+  videoPrice4k?: string
   billingMode?: string
   billingExpr?: string
   requestRuleExpr?: string
@@ -64,6 +68,8 @@ export const hasPricingValue = (value?: string) =>
 export const isBasePricingUnset = (snapshot?: ModelPricingSnapshot) =>
   !snapshot ||
   (snapshot.billingMode !== 'tiered_expr' &&
+    snapshot.billingMode !== 'video_per_second' &&
+    snapshot.billingMode !== 'image_quality' &&
     !hasPricingValue(snapshot.price) &&
     !hasPricingValue(snapshot.ratio))
 
@@ -83,6 +89,8 @@ const ratioToPrice = (ratio?: string, denominator?: string) => {
 export const getModeLabel = (mode?: string) => {
   if (mode === 'per-request') return 'Per-request'
   if (mode === 'tiered_expr') return 'Expression'
+  if (mode === 'video_per_second') return '按秒'
+  if (mode === 'image_quality') return '按品质'
   return 'Per-token'
 }
 
@@ -91,6 +99,8 @@ export const getModeVariant = (
 ): 'warning' | 'info' | 'success' => {
   if (mode === 'per-request') return 'warning'
   if (mode === 'tiered_expr') return 'info'
+  if (mode === 'video_per_second') return 'warning'
+  if (mode === 'image_quality') return 'info'
   return 'success'
 }
 
@@ -109,8 +119,22 @@ export const getPriceSummary = (
   row: ModelPricingSnapshot,
   t: (key: string) => string
 ) => {
+  if (row.billingMode === 'image_quality') {
+    return `9 ${t('tiers')}`
+  }
   if (row.billingMode === 'tiered_expr') {
     return getExpressionSummary(row, t)
+  }
+  if (row.billingMode === 'video_per_second') {
+    const parts = [
+      row.videoPrice480p && `480p $${row.videoPrice480p}`,
+      row.videoPrice720p && `720p $${row.videoPrice720p}`,
+      row.videoPrice1080p && `1080p $${row.videoPrice1080p}`,
+      row.videoPrice4k && `4K $${row.videoPrice4k}`,
+    ].filter(Boolean)
+    return parts.length > 0
+      ? `${parts.join(' · ')} / ${t('second')}`
+      : t('Unset price')
   }
   if (row.billingMode === 'per-request') {
     return row.price ? `$${row.price} / ${t('request')}` : t('Unset price')
@@ -137,10 +161,16 @@ export const getPriceDetail = (
   row: ModelPricingSnapshot,
   t: (key: string) => string
 ) => {
+  if (row.billingMode === 'image_quality') {
+    return t('Enabled')
+  }
   if (row.billingMode === 'tiered_expr') {
     return row.requestRuleExpr
       ? t('Includes request rules')
       : t('Expression based')
+  }
+  if (row.billingMode === 'video_per_second') {
+    return t('Video price 每秒')
   }
   if (row.billingMode === 'per-request') {
     return t('Fixed request price')
@@ -249,6 +279,47 @@ export const buildModelSnapshots = ({
         billingMode: 'tiered_expr',
         billingExpr: pureExpr,
         requestRuleExpr,
+        price,
+        ratio,
+        cacheRatio: cache,
+        createCacheRatio: createCache,
+        completionRatio: completion,
+        imageRatio: image,
+        audioRatio: audio,
+        audioCompletionRatio: audioCompletion,
+        hasConflict: false,
+      }
+    }
+
+    if (modeForModel === 'video_per_second') {
+      const videoPrices = safeJsonParse<Record<string, number>>(
+        billingExprMap[name] || '{}',
+        { fallback: {}, context: 'video per-second prices' }
+      )
+      return {
+        name,
+        billingMode: 'video_per_second',
+        billingExpr: billingExprMap[name] || '',
+        price,
+        ratio,
+        cacheRatio: cache,
+        createCacheRatio: createCache,
+        completionRatio: completion,
+        imageRatio: image,
+        audioRatio: audio,
+        audioCompletionRatio: audioCompletion,
+        videoPrice480p: videoPrices['480p']?.toString() || '',
+        videoPrice720p: videoPrices['720p']?.toString() || '',
+        videoPrice1080p: videoPrices['1080p']?.toString() || '',
+        videoPrice4k: videoPrices['4k']?.toString() || '',
+        hasConflict: false,
+      }
+    }
+
+    if (modeForModel === 'image_quality') {
+      return {
+        name,
+        billingMode: 'image_quality',
         price,
         ratio,
         cacheRatio: cache,

@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"fmt"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -98,4 +100,86 @@ func ResetModelRatio(c *gin.Context) {
 		"success": true,
 		"message": "重置模型倍率成功",
 	})
+}
+
+type ModelImageQualityPriceRequest struct {
+	ModelName string                        `json:"model_name"`
+	Enabled   bool                          `json:"enabled"`
+	Prices    []model.ImageQualityPriceItem `json:"prices"`
+}
+
+func isImageQualityPublicPriceAllowedModel(modelName string) bool {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return false
+	}
+	for _, p := range model.GetPricing() {
+		if p.ModelName != modelName {
+			continue
+		}
+		for _, endpointType := range p.SupportedEndpointTypes {
+			et := strings.ToLower(strings.TrimSpace(string(endpointType)))
+			if strings.Contains(et, "image") || strings.Contains(et, "images") {
+				return true
+			}
+		}
+		lowerName := strings.ToLower(modelName)
+		return strings.Contains(lowerName, "image") ||
+			strings.Contains(lowerName, "dall") ||
+			strings.Contains(lowerName, "flux") ||
+			strings.Contains(lowerName, "mj") ||
+			strings.Contains(lowerName, "midjourney")
+	}
+	return false
+}
+
+func GetModelImageQualityPrices(c *gin.Context) {
+	modelName := strings.TrimSpace(c.Query("model_name"))
+	if modelName == "" {
+		common.ApiError(c, fmt.Errorf("model_name is required"))
+		return
+	}
+	prices, err := model.GetModelImageQualityPrices(modelName)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, prices)
+}
+
+func SaveModelImageQualityPrices(c *gin.Context) {
+	var req ModelImageQualityPriceRequest
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	req.ModelName = strings.TrimSpace(req.ModelName)
+	if req.ModelName == "" {
+		common.ApiError(c, fmt.Errorf("model_name is required"))
+		return
+	}
+	if !isImageQualityPublicPriceAllowedModel(req.ModelName) {
+		common.ApiError(c, fmt.Errorf("only image fixed/per-call priced models can use image quality pricing"))
+		return
+	}
+	if err := model.SaveModelImageQualityPrices(req.ModelName, req.Prices, req.Enabled); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	model.InvalidatePricingCache()
+	common.ApiSuccess(c, nil)
+}
+
+func DeleteModelImageQualityPrices(c *gin.Context) {
+	modelName := strings.TrimSpace(c.Query("model_name"))
+	if modelName == "" {
+		common.ApiError(c, fmt.Errorf("model_name is required"))
+		return
+	}
+	if err := model.DeleteModelImageQualityPrices(modelName); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	model.InvalidatePricingCache()
+	common.ApiSuccess(c, nil)
 }

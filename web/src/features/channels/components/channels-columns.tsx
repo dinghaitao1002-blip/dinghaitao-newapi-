@@ -78,6 +78,7 @@ import {
 import { parseUpstreamUpdateMeta } from '../lib/upstream-update-utils'
 import type { Channel } from '../types'
 import { ChannelRowActionsLayoutContext } from './channel-row-actions-context'
+import { ChannelCategorySelector } from './channel-category-selector'
 import { useChannels } from './channels-provider'
 import { DataTableRowActions } from './data-table-row-actions'
 import { DataTableTagRowActions } from './data-table-tag-row-actions'
@@ -1013,6 +1014,27 @@ export function useChannelsColumns(
       },
 
       // Group column
+      {
+        accessorKey: 'category',
+        header: t('Channel Category'),
+        meta: { mobileHidden: true },
+        cell: ({ row }) => {
+          if (isTagAggregateRow(row.original)) {
+            return <span className='text-muted-foreground text-xs'>-</span>
+          }
+          const category = String(row.getValue('category') || '').trim()
+          return (
+            <ChannelCategorySelector
+              channelId={row.original.id}
+              value={category}
+            />
+          )
+        },
+        size: 130,
+        enableSorting: false,
+      },
+
+      // User routing group column
       {
         accessorKey: 'group',
         header: t('Groups'),

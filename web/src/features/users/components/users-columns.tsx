@@ -161,8 +161,8 @@ export function useUsersColumns(): ColumnDef<User>[] {
       meta: { mobileBadge: true },
     },
     {
-      id: 'quota',
-      accessorKey: 'quota',
+      id: 'used_quota',
+      accessorKey: 'used_quota',
       header: t('Quota'),
       cell: ({ row }) => {
         const user = row.original

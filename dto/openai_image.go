@@ -17,9 +17,13 @@ const MaxImageN = 128
 
 type ImageRequest struct {
 	Model             string          `json:"model"`
+	// CdnKey is forwarded to image providers that select the output CDN.
+	CdnKey            json.RawMessage `json:"cdn_key,omitempty"`
 	Prompt            string          `json:"prompt" binding:"required"`
 	N                 *uint           `json:"n,omitempty"`
 	Size              string          `json:"size,omitempty"`
+	AspectRatio       string          `json:"aspect_ratio,omitempty"`
+	Resolution        string          `json:"resolution,omitempty"`
 	Quality           string          `json:"quality,omitempty"`
 	ResponseFormat    string          `json:"response_format,omitempty"`
 	Style             json.RawMessage `json:"style,omitempty"`

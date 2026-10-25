@@ -270,3 +270,96 @@ export function formatRequestPrice(
     abbreviate: false,
   })
 }
+
+export type VideoSecondPrices = {
+  '480p'?: number
+  '720p'?: number
+  '1080p'?: number
+  '4k'?: number
+}
+
+export function isVideoPerSecondModel(model: PricingModel): boolean {
+  return model.billing_mode === 'video_per_second' && Boolean(model.billing_expr)
+}
+
+export function parseVideoSecondPrices(model: PricingModel): VideoSecondPrices {
+  if (!isVideoPerSecondModel(model)) return {}
+  try {
+    const parsed = JSON.parse(model.billing_expr || '{}') as VideoSecondPrices
+    return {
+      '480p': Number.isFinite(Number(parsed['480p']))
+        ? Number(parsed['480p'])
+        : undefined,
+      '720p': Number.isFinite(Number(parsed['720p']))
+        ? Number(parsed['720p'])
+        : undefined,
+      '1080p': Number.isFinite(Number(parsed['1080p']))
+        ? Number(parsed['1080p'])
+        : undefined,
+      '4k': Number.isFinite(Number(parsed['4k']))
+        ? Number(parsed['4k'])
+        : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+export function formatVideoSecondPrice(
+  model: PricingModel,
+  resolution: '480p' | '720p' | '1080p' | '4k',
+  showWithRecharge = false,
+  priceRate = 1,
+  usdExchangeRate = 1,
+  selectedGroup?: string
+): string {
+  const prices = parseVideoSecondPrices(model)
+  const raw = prices[resolution]
+  if (!Number.isFinite(Number(raw))) return '-'
+
+  const displayGroupRatio = getDisplayGroupRatio(model, selectedGroup)
+  let priceInUSD = Number(raw) * displayGroupRatio
+
+  priceInUSD = applyRechargeRate(
+    priceInUSD,
+    showWithRecharge,
+    priceRate,
+    usdExchangeRate
+  )
+
+  return formatCurrencyFromUSD(priceInUSD, {
+    digitsLarge: 4,
+    digitsSmall: 6,
+    abbreviate: false,
+  })
+}
+
+export function formatVideoSecondGroupPrice(
+  model: PricingModel,
+  group: string,
+  resolution: '480p' | '720p' | '1080p' | '4k',
+  showWithRecharge = false,
+  priceRate = 1,
+  usdExchangeRate = 1,
+  groupRatio: Record<string, number>
+): string {
+  const prices = parseVideoSecondPrices(model)
+  const raw = prices[resolution]
+  if (!Number.isFinite(Number(raw))) return '-'
+
+  const ratio = getConfiguredGroupRatio(groupRatio, group)
+  let priceInUSD = Number(raw) * ratio
+
+  priceInUSD = applyRechargeRate(
+    priceInUSD,
+    showWithRecharge,
+    priceRate,
+    usdExchangeRate
+  )
+
+  return formatCurrencyFromUSD(priceInUSD, {
+    digitsLarge: 4,
+    digitsSmall: 6,
+    abbreviate: false,
+  })
+}

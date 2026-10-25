@@ -45,13 +45,38 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	adaptor.Init(info)
 
 	var requestBody io.Reader
+	// outboundBody owns the rebuilt upstream body. It is closed as soon as the
+	// upstream call returns instead of at function exit, so the copy does not
+	// stay on the heap for the whole time the provider spends generating.
+	var outboundBody io.Closer = io.NopCloser(nil)
+	defer func() { outboundBody.Close() }()
 
 	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
-		requestBody = common.ReaderOnly(storage)
+		// Passthrough keeps all client fields (for example provider-specific
+		// cdn_key), but model routing still needs the mapped upstream name.
+		// Rewrite only the top-level JSON model field and leave every other
+		// field untouched from the caller's perspective.
+		if info.IsModelMapped && info.UpstreamModelName != "" {
+			rawBody, bytesErr := storage.Bytes()
+			if bytesErr == nil {
+				var passthroughBody map[string]interface{}
+				if unmarshalErr := common.Unmarshal(rawBody, &passthroughBody); unmarshalErr == nil {
+					passthroughBody["model"] = info.UpstreamModelName
+					mappedBody, marshalErr := common.Marshal(passthroughBody)
+					if marshalErr == nil {
+						info.UpstreamRequestBodySize = int64(len(mappedBody))
+						requestBody = bytes.NewBuffer(mappedBody)
+					}
+				}
+			}
+		}
+		if requestBody == nil {
+			requestBody = common.ReaderOnly(storage)
+		}
 	} else {
 		convertedRequest, err := adaptor.ConvertImageRequest(c, info, *request)
 		if err != nil {
@@ -59,9 +84,16 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		}
 		relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 
-		switch convertedRequest.(type) {
+		switch converted := convertedRequest.(type) {
 		case *bytes.Buffer:
-			requestBody = convertedRequest.(io.Reader)
+			requestBody = converted
+		case common.BodyStorage:
+			// The rebuilt multipart form was spooled by the adaptor (to disk
+			// when the disk cache accepts it). Hand net/http a replayable
+			// reader and keep the storage lifecycle here.
+			outboundBody = converted
+			info.UpstreamRequestBodySize = converted.Size()
+			requestBody = common.NewReplayableBodyReader(converted)
 		default:
 			jsonData, err := common.Marshal(convertedRequest)
 			if err != nil {
@@ -81,7 +113,7 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 			if err != nil {
 				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 			}
-			defer closer.Close()
+			outboundBody = closer
 			jsonData = nil
 			info.UpstreamRequestBodySize = size
 			requestBody = body
@@ -91,6 +123,9 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	statusCodeMappingStr := c.GetString("status_code_mapping")
 
 	resp, err := adaptor.DoRequest(c, info, requestBody)
+	// The transport has finished sending (or failed) by now; any replay for
+	// transport-level retries happened inside DoRequest.
+	outboundBody.Close()
 	if err != nil {
 		return types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
 	}
@@ -111,8 +146,21 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		}
 	}
 
+	// Upstream accepted the request, so the client body and the parsed
+	// multipart form (each a full copy of the reference images) are no
+	// longer needed: release them now rather than when the request ends,
+	// otherwise they sit on the heap for the whole generation. Nothing after
+	// this point can replay the request, so a response handler failure must
+	// not be retried on another channel.
+	common.CleanupBodyStorage(c)
+	if c.Request.MultipartForm != nil {
+		_ = c.Request.MultipartForm.RemoveAll()
+		c.Request.MultipartForm = nil
+	}
+
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
+		types.ErrOptionWithSkipRetry()(newAPIError)
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -55,7 +56,8 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) types.
 	}
 
 	// check user group special ratio
-	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
+	// Use request admission time, including retries and requests crossing 08:00/20:00.
+	userGroupRatio, ok := ratio_setting.GetGroupGroupRatioAt(relayInfo.UserGroup, relayInfo.UsingGroup, relayInfo.StartTime)
 	if ok {
 		// user group special ratio
 		groupRatioInfo.GroupSpecialRatio = userGroupRatio
@@ -63,14 +65,129 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) types.
 		groupRatioInfo.HasSpecialRatio = true
 	} else {
 		// normal group ratio
-		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
+		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatioAt(relayInfo.UsingGroup, relayInfo.StartTime)
 	}
 
 	return groupRatioInfo
 }
 
+func resolveImageQualityPricing(c *gin.Context, info *relaycommon.RelayInfo, meta *types.TokenCountMeta) (float64, bool, error) {
+	if info == nil || info.Request == nil {
+		return 0, false, nil
+	}
+
+	imageReq, ok := info.Request.(*dto.ImageRequest)
+	if !ok || imageReq == nil {
+		return 0, false, nil
+	}
+
+	modelName := strings.TrimSpace(info.OriginModelName)
+	if modelName == "" {
+		return 0, false, nil
+	}
+
+	quality := model.NormalizeImageQuality(imageReq.Quality)
+	resolution := model.NormalizeImageResolution(imageReq.Size)
+
+	// 只有确实存在品质价格配置时，才要求请求尺寸可归一化。
+	// 未配置品质价格的模型必须继续回退到普通模型价格/倍率计费。
+	// 1. 用户专属生图品质密价优先级最高。
+	userPrices, err := model.GetUserModelImageQualityPrices(info.UserId, modelName)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(userPrices) > 0 {
+		if resolution == "" {
+			return 0, false, fmt.Errorf("unsupported image resolution for user quality pricing: model=%s size=%s", modelName, imageReq.Size)
+		}
+		if price, ok := model.GetUserModelImageQualityPrice(info.UserId, modelName, quality, resolution); ok {
+			// 品质价格已经是最终单张价格，不再叠加 DALL-E 内置 size/quality ratio，只保留 n。
+			if meta != nil {
+				meta.ImagePriceRatio = 0
+			}
+			info.ImageQualityPriceSource = "user_image_quality_private"
+			info.ImageQuality = quality
+			info.ImageResolution = resolution
+			info.ImageQualityUnitPrice = price
+			logger.LogInfo(c, fmt.Sprintf("user image quality private price applied: userId=%d, model=%s, quality=%s, resolution=%s, price=%f", info.UserId, modelName, quality, resolution, price))
+			return price, true, nil
+		}
+		return 0, false, fmt.Errorf("user image quality private price not configured: model=%s quality=%s resolution=%s", modelName, quality, resolution)
+	}
+
+	// 2. 模型公开生图品质价格。
+	modelPrices, err := model.GetModelImageQualityPrices(modelName)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(modelPrices) > 0 {
+		if resolution == "" {
+			return 0, false, fmt.Errorf("unsupported image resolution for model quality pricing: model=%s size=%s", modelName, imageReq.Size)
+		}
+		if price, ok := model.GetModelImageQualityPrice(modelName, quality, resolution); ok {
+			if meta != nil {
+				meta.ImagePriceRatio = 0
+			}
+			info.ImageQualityPriceSource = "model_image_quality_public"
+			info.ImageQuality = quality
+			info.ImageResolution = resolution
+			info.ImageQualityUnitPrice = price
+			logger.LogInfo(c, fmt.Sprintf("model image quality price applied: userId=%d, model=%s, quality=%s, resolution=%s, price=%f", info.UserId, modelName, quality, resolution, price))
+			return price, true, nil
+		}
+		return 0, false, fmt.Errorf("model image quality price not configured: model=%s quality=%s resolution=%s", modelName, quality, resolution)
+	}
+
+	return 0, false, nil
+}
+
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (types.PriceData, error) {
-	modelPrice, usePrice := ratio_setting.GetModelPrice(info.OriginModelName, false)
+	billingMode := billing_setting.GetBillingMode(info.OriginModelName)
+
+	var modelPrice float64
+	var usePrice bool
+
+	if billingMode == billing_setting.BillingModeImageQuality {
+		// Image-quality mode is exclusive: never read or fall back to ordinary pricing.
+		imageQualityPrice, ok, err := resolveImageQualityPricing(c, info, meta)
+		if err != nil {
+			return types.PriceData{}, err
+		}
+		if !ok {
+			return types.PriceData{}, modelPriceNotConfiguredError(
+				info.OriginModelName,
+				info.UserId,
+			)
+		}
+
+		modelPrice = imageQualityPrice
+		usePrice = true
+	} else {
+		modelPrice, usePrice = ratio_setting.GetModelPrice(
+			info.OriginModelName,
+			false,
+		)
+
+		if imageQualityPrice, ok, err := resolveImageQualityPricing(c, info, meta); err != nil {
+			return types.PriceData{}, err
+		} else if ok {
+			modelPrice = imageQualityPrice
+			usePrice = true
+		} else if usePrice {
+			if userPrice, ok := model.GetUserModelPrice(
+				info.UserId,
+				info.OriginModelName,
+			); ok {
+				modelPrice = userPrice
+				logger.LogInfo(c, fmt.Sprintf(
+					"user private model price applied: userId=%d, model=%s, price=%f",
+					info.UserId,
+					info.OriginModelName,
+					userPrice,
+				))
+			}
+		}
+	}
 
 	groupRatioInfo := HandleGroupRatio(c, info)
 
@@ -188,6 +305,20 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (types
 
 	modelPrice, success := ratio_setting.GetModelPrice(info.OriginModelName, true)
 	usePrice := success
+	if billing_setting.GetBillingMode(info.OriginModelName) == billing_setting.BillingModeVideoPerSecond {
+		basePrice, ok := billing_setting.GetVideoSecondBasePrice(info.OriginModelName)
+		if !ok {
+			return types.PriceData{}, fmt.Errorf("video per-second price not configured for model %s", info.OriginModelName)
+		}
+		modelPrice = basePrice
+		success = true
+		usePrice = true
+	} else if userPrice, ok := model.GetUserModelPrice(info.UserId, info.OriginModelName); ok {
+		modelPrice = userPrice
+		success = true
+		usePrice = true
+		logger.LogInfo(c, fmt.Sprintf("user private model price applied: userId=%d, model=%s, price=%f", info.UserId, info.OriginModelName, userPrice))
+	}
 	var modelRatio float64
 
 	if !success {
@@ -258,11 +389,28 @@ func HasModelBillingConfig(modelName string) bool {
 	if _, ok, _ := ratio_setting.GetModelRatio(modelName); ok {
 		return true
 	}
-	if billing_setting.GetBillingMode(modelName) != billing_setting.BillingModeTieredExpr {
+
+	switch billing_setting.GetBillingMode(modelName) {
+	case billing_setting.BillingModeTieredExpr:
+		expr, ok := billing_setting.GetBillingExpr(modelName)
+		return ok && strings.TrimSpace(expr) != ""
+	case billing_setting.BillingModeVideoPerSecond:
+		expr, ok := billing_setting.GetBillingExpr(modelName)
+		return ok && strings.TrimSpace(expr) != ""
+	case billing_setting.BillingModeImageQuality:
+		prices, err := model.GetModelImageQualityPrices(modelName)
+		if err != nil {
+			return false
+		}
+		for _, price := range prices {
+			if price.Enabled {
+				return true
+			}
+		}
+		return false
+	default:
 		return false
 	}
-	expr, ok := billing_setting.GetBillingExpr(modelName)
-	return ok && strings.TrimSpace(expr) != ""
 }
 
 func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta, groupRatioInfo types.GroupRatioInfo) (types.PriceData, error) {

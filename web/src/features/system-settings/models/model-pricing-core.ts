@@ -33,13 +33,22 @@ export const createModelPricingSchema = (t: (key: string) => string) =>
     imageRatio: z.string().optional(),
     audioRatio: z.string().optional(),
     audioCompletionRatio: z.string().optional(),
+    videoPrice480p: z.string().optional(),
+    videoPrice720p: z.string().optional(),
+    videoPrice1080p: z.string().optional(),
+    videoPrice4k: z.string().optional(),
   })
 
 export type ModelPricingFormValues = z.infer<
   ReturnType<typeof createModelPricingSchema>
 >
 
-export type PricingMode = 'per-token' | 'per-request' | 'tiered_expr'
+export type PricingMode =
+  | 'per-token'
+  | 'per-request'
+  | 'tiered_expr'
+  | 'video_per_second'
+  | 'image_quality'
 
 export type LaneKey =
   | 'completion'
@@ -59,6 +68,10 @@ export type ModelRatioData = {
   imageRatio?: string
   audioRatio?: string
   audioCompletionRatio?: string
+  videoPrice480p?: string
+  videoPrice720p?: string
+  videoPrice1080p?: string
+  videoPrice4k?: string
   billingMode?: PricingMode
   billingExpr?: string
   requestRuleExpr?: string
@@ -220,7 +233,7 @@ export function buildPreviewRows(
   if (mode === 'tiered_expr') {
     const effectiveExpr = combineBillingExpr(billingExpr, requestRuleExpr)
     return [
-      { key: 'mode', label: 'BillingMode', value: 'tiered_expr' },
+      { key: 'mode', label: '计费模式', value: 'tiered_expr' },
       {
         key: 'expr',
         label: t('Expression'),
@@ -236,6 +249,40 @@ export function buildPreviewRows(
         key: 'price',
         label: 'ModelPrice',
         value: values.price || t('Empty'),
+      },
+    ]
+  }
+
+  if (mode === 'video_per_second') {
+    return [
+      { key: 'mode', label: '计费模式', value: '按秒' },
+      {
+        key: '480p',
+        label: '480p',
+        value: values.videoPrice480p
+          ? `$${values.videoPrice480p} / ${t('second')}`
+          : t('Empty'),
+      },
+      {
+        key: '720p',
+        label: '720p',
+        value: values.videoPrice720p
+          ? `$${values.videoPrice720p} / ${t('second')}`
+          : t('Empty'),
+      },
+      {
+        key: '1080p',
+        label: '1080p',
+        value: values.videoPrice1080p
+          ? `$${values.videoPrice1080p} / ${t('second')}`
+          : t('Empty'),
+      },
+      {
+        key: '4k',
+        label: '4K',
+        value: values.videoPrice4k
+          ? `$${values.videoPrice4k} / ${t('second')}`
+          : t('Empty'),
       },
     ]
   }

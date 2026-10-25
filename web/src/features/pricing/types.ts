@@ -27,6 +27,13 @@ export type PricingVendor = {
   description?: string
 }
 
+export type ImageQualityPriceItem = {
+  quality: 'low' | 'medium' | 'high'
+  resolution: '1k' | '2k' | '4k'
+  price: number
+  enabled: boolean
+}
+
 export type PricingModel = {
   id: number
   model_name: string
@@ -56,6 +63,8 @@ export type PricingModel = {
   billing_expr?: string
   /** Pricing version returned by backend, useful for cache busting */
   pricing_version?: string
+  image_quality_pricing_enabled?: boolean
+  image_quality_prices?: ImageQualityPriceItem[]
   /**
    * Optional model metadata fields reserved for backend-provided catalog data.
    * Keep them data-driven; do not synthesize display values on the client.

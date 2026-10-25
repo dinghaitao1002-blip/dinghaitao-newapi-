@@ -28,6 +28,7 @@ import {
 } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { sideDrawerContentClassName } from '@/components/drawer-layout'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -60,7 +61,9 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 import {
@@ -84,6 +87,57 @@ import { formatPricingNumber } from './pricing-format'
 import { TieredPricingEditor } from './tiered-pricing-editor'
 
 export type { ModelRatioData } from './model-pricing-core'
+
+const IMAGE_QUALITY_LEVELS = ['low', 'medium', 'high'] as const
+const IMAGE_RESOLUTION_LEVELS = ['1k', '2k', '4k'] as const
+
+type ImageQualityLevel = (typeof IMAGE_QUALITY_LEVELS)[number]
+type ImageResolutionLevel = (typeof IMAGE_RESOLUTION_LEVELS)[number]
+type ImageQualityPriceDraft = Record<ImageQualityLevel, Record<ImageResolutionLevel, string>>
+
+type ImageQualityPriceItem = {
+  quality: ImageQualityLevel
+  resolution: ImageResolutionLevel
+  price: number
+  enabled: boolean
+}
+
+type VideoResolutionKey = '480p' | '720p' | '1080p' | '4k'
+
+function createEmptyVideoResolutionEnabled(): Record<VideoResolutionKey, boolean> {
+  return {
+    '480p': false,
+    '720p': false,
+    '1080p': false,
+    '4k': false,
+  }
+}
+
+function hasConfiguredVideoPrice(value?: string): boolean {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+function createEmptyImageQualityPriceDraft(): ImageQualityPriceDraft {
+  return {
+    low: { '1k': '', '2k': '', '4k': '' },
+    medium: { '1k': '', '2k': '', '4k': '' },
+    high: { '1k': '', '2k': '', '4k': '' },
+  }
+}
+
+function imageQualityItemsToDraft(items?: ImageQualityPriceItem[]): ImageQualityPriceDraft {
+  const draft = createEmptyImageQualityPriceDraft()
+  for (const item of items || []) {
+    if (
+      IMAGE_QUALITY_LEVELS.includes(item.quality) &&
+      IMAGE_RESOLUTION_LEVELS.includes(item.resolution)
+    ) {
+      draft[item.quality][item.resolution] = String(item.price)
+    }
+  }
+  return draft
+}
+
 
 type ModelPricingSheetProps = {
   open: boolean
@@ -156,6 +210,13 @@ export const ModelPricingEditorPanel = forwardRef<
   const [billingExpr, setBillingExpr] = useState('')
   const [requestRuleExpr, setRequestRuleExpr] = useState('')
   const [editorReloadToken, setEditorReloadToken] = useState(0)
+  const [imageQualityPriceDraft, setImageQualityPriceDraft] = useState<ImageQualityPriceDraft>(() =>
+    createEmptyImageQualityPriceDraft()
+  )
+  const [isSavingImageQualityPricing, setIsSavingImageQualityPricing] = useState(false)
+  const [videoResolutionEnabled, setVideoResolutionEnabled] = useState<
+    Record<VideoResolutionKey, boolean>
+  >(() => createEmptyVideoResolutionEnabled())
   const isEditMode = !!editData
 
   const form = useForm<ModelPricingFormValues>({
@@ -170,11 +231,57 @@ export const ModelPricingEditorPanel = forwardRef<
       imageRatio: '',
       audioRatio: '',
       audioCompletionRatio: '',
+      videoPrice480p: '',
+      videoPrice720p: '',
+      videoPrice1080p: '',
+      videoPrice4k: '',
     },
   })
 
+
+  useEffect(() => {
+    const modelName = editData?.name?.trim()
+    if (!modelName) {
+      setImageQualityPriceDraft(createEmptyImageQualityPriceDraft())
+      return
+    }
+
+    let cancelled = false
+    async function loadImageQualityPrices() {
+      try {
+        const res = await api.get('/api/models/image-quality-prices', {
+          params: { model_name: modelName },
+        })
+        if (cancelled) return
+        if (res.data?.success === false) {
+          throw new Error(res.data?.message || t('加载生图品质定价失败'))
+        }
+        const items = (res.data?.data || []) as ImageQualityPriceItem[]
+        setImageQualityPriceDraft(imageQualityItemsToDraft(items))
+      } catch {
+        if (!cancelled) {
+          setImageQualityPriceDraft(createEmptyImageQualityPriceDraft())
+        }
+      }
+    }
+
+    loadImageQualityPrices()
+    return () => {
+      cancelled = true
+    }
+  }, [editData?.name])
+
   useEffect(() => {
     const nextLaneState = createInitialLaneState(editData)
+    const nextVideoResolutionEnabled =
+      editData?.billingMode === 'video_per_second'
+        ? {
+            '480p': hasConfiguredVideoPrice(editData.videoPrice480p),
+            '720p': hasConfiguredVideoPrice(editData.videoPrice720p),
+            '1080p': hasConfiguredVideoPrice(editData.videoPrice1080p),
+            '4k': hasConfiguredVideoPrice(editData.videoPrice4k),
+          }
+        : createEmptyVideoResolutionEnabled()
 
     if (editData) {
       form.reset({
@@ -187,13 +294,21 @@ export const ModelPricingEditorPanel = forwardRef<
         imageRatio: editData.imageRatio || '',
         audioRatio: editData.audioRatio || '',
         audioCompletionRatio: editData.audioCompletionRatio || '',
+        videoPrice480p: editData.videoPrice480p || '',
+        videoPrice720p: editData.videoPrice720p || '',
+        videoPrice1080p: editData.videoPrice1080p || '',
+        videoPrice4k: editData.videoPrice4k || '',
       })
       setPricingMode(
-        editData.billingMode === 'tiered_expr'
-          ? 'tiered_expr'
-          : editData.price
-            ? 'per-request'
-            : 'per-token'
+        editData.billingMode === 'image_quality'
+          ? 'image_quality'
+          : editData.billingMode === 'video_per_second'
+            ? 'video_per_second'
+          : editData.billingMode === 'tiered_expr'
+            ? 'tiered_expr'
+            : editData.price
+              ? 'per-request'
+              : 'per-token'
       )
       setBillingExpr(editData.billingExpr || '')
       setRequestRuleExpr(editData.requestRuleExpr || '')
@@ -208,6 +323,10 @@ export const ModelPricingEditorPanel = forwardRef<
         imageRatio: '',
         audioRatio: '',
         audioCompletionRatio: '',
+        videoPrice480p: '',
+        videoPrice720p: '',
+        videoPrice1080p: '',
+        videoPrice4k: '',
       })
       setPricingMode('per-token')
       setBillingExpr('')
@@ -217,6 +336,7 @@ export const ModelPricingEditorPanel = forwardRef<
     setPromptPrice(nextLaneState.promptPrice)
     setLanePrices(nextLaneState.prices)
     setLaneEnabled(nextLaneState.enabled)
+    setVideoResolutionEnabled(nextVideoResolutionEnabled)
     setEditorReloadToken((token) => token + 1)
   }, [editData, form])
 
@@ -340,6 +460,105 @@ export const ModelPricingEditorPanel = forwardRef<
     }
   }
 
+  const handleVideoResolutionToggle = (
+    resolution: VideoResolutionKey,
+    checked: boolean
+  ) => {
+    setVideoResolutionEnabled((prev) => ({
+      ...prev,
+      [resolution]: checked,
+    }))
+  }
+
+  const renderVideoResolutionToggle = (resolution: VideoResolutionKey) => {
+    const enabled = videoResolutionEnabled[resolution]
+    return (
+      <div className='flex items-center gap-2'>
+        <span
+          className={
+            enabled
+              ? 'text-primary text-xs font-medium'
+              : 'text-muted-foreground text-xs'
+          }
+        >
+          {t(enabled ? 'Enabled' : 'Disabled')}
+        </span>
+        <Switch
+          checked={enabled}
+          onCheckedChange={(checked) =>
+            handleVideoResolutionToggle(resolution, checked)
+          }
+        />
+      </div>
+    )
+  }
+
+  const handleImageQualityPriceChange = (
+    quality: ImageQualityLevel,
+    resolution: ImageResolutionLevel,
+    value: string
+  ) => {
+    if (!numericDraftRegex.test(value)) return
+    setImageQualityPriceDraft((prev) => ({
+      ...prev,
+      [quality]: {
+        ...prev[quality],
+        [resolution]: value,
+      },
+    }))
+  }
+
+  const saveImageQualityPricing = async () => {
+    const modelName = form.getValues('name').trim()
+    if (!modelName) {
+      toast.error(t('Model name is required'))
+      return
+    }
+
+    const prices: ImageQualityPriceItem[] = []
+    for (const quality of IMAGE_QUALITY_LEVELS) {
+      for (const resolution of IMAGE_RESOLUTION_LEVELS) {
+        const raw = imageQualityPriceDraft[quality][resolution]
+        const price = Number(raw)
+        if (raw === '' || !Number.isFinite(price) || price < 0) {
+          toast.error(t('请完整填写所有品质和分辨率的价格'))
+          return
+        }
+        prices.push({ quality, resolution, price, enabled: true })
+      }
+    }
+
+    let imageQualityPricingSaved = false
+    setIsSavingImageQualityPricing(true)
+    try {
+      const res = await api.post('/api/models/image-quality-prices', {
+        model_name: modelName,
+        enabled: true,
+        prices,
+      })
+      if (res.data?.success === false) {
+        throw new Error(res.data?.message || t('保存生图品质定价失败'))
+      }
+      imageQualityPricingSaved = true
+
+      // The quality-price matrix and the model billing mode are persisted by
+      // different APIs. Save the outer model form as part of the same user
+      // action so the model immediately leaves the "unset pricing" list.
+      await onSave?.()
+
+      toast.success(t('生图品质定价和计费模式已保存'))
+    } catch (error: any) {
+      const fallbackMessage = imageQualityPricingSaved
+        ? t('品质价格已保存，但模型计费模式保存失败，请重试')
+        : t('保存生图品质定价失败')
+      toast.error(
+        error?.response?.data?.message || error?.message || fallbackMessage
+      )
+    } finally {
+      setIsSavingImageQualityPricing(false)
+    }
+  }
+
   const watchedValues = form.watch()
   const previewRows = useMemo(
     () =>
@@ -451,16 +670,43 @@ export const ModelPricingEditorPanel = forwardRef<
         imageRatio: values.imageRatio || '',
         audioRatio: values.audioRatio || '',
         audioCompletionRatio: values.audioCompletionRatio || '',
+        videoPrice480p: videoResolutionEnabled['480p']
+          ? values.videoPrice480p || ''
+          : '',
+        videoPrice720p: videoResolutionEnabled['720p']
+          ? values.videoPrice720p || ''
+          : '',
+        videoPrice1080p: videoResolutionEnabled['1080p']
+          ? values.videoPrice1080p || ''
+          : '',
+        videoPrice4k: videoResolutionEnabled['4k']
+          ? values.videoPrice4k || ''
+          : '',
       }
 
       if (pricingMode === 'tiered_expr') {
         data.billingExpr = billingExpr
         data.requestRuleExpr = requestRuleExpr
+      } else if (pricingMode === 'video_per_second') {
+        const videoPrices: Record<string, number> = {}
+        if (videoResolutionEnabled['480p']) {
+          videoPrices['480p'] = Number(values.videoPrice480p || 0)
+        }
+        if (videoResolutionEnabled['720p']) {
+          videoPrices['720p'] = Number(values.videoPrice720p || 0)
+        }
+        if (videoResolutionEnabled['1080p']) {
+          videoPrices['1080p'] = Number(values.videoPrice1080p || 0)
+        }
+        if (videoResolutionEnabled['4k']) {
+          videoPrices['4k'] = Number(values.videoPrice4k || 0)
+        }
+        data.billingExpr = JSON.stringify(videoPrices)
       }
 
       return data
     },
-    [billingExpr, pricingMode, requestRuleExpr]
+    [billingExpr, pricingMode, requestRuleExpr, videoResolutionEnabled]
   )
 
   useImperativeHandle(
@@ -544,7 +790,7 @@ export const ModelPricingEditorPanel = forwardRef<
                   onValueChange={handleModeChange}
                   className='gap-4'
                 >
-                  <TabsList className='grid w-full grid-cols-3'>
+                  <TabsList className='grid w-full grid-cols-5'>
                     <TabsTrigger value='per-token'>
                       {t('Per-token')}
                     </TabsTrigger>
@@ -553,6 +799,12 @@ export const ModelPricingEditorPanel = forwardRef<
                     </TabsTrigger>
                     <TabsTrigger value='tiered_expr'>
                       {t('Expression')}
+                    </TabsTrigger>
+                    <TabsTrigger value='video_per_second'>
+                      {t('按秒')}
+                    </TabsTrigger>
+                    <TabsTrigger value='image_quality'>
+                      {t('按品质')}
                     </TabsTrigger>
                   </TabsList>
 
@@ -636,6 +888,210 @@ export const ModelPricingEditorPanel = forwardRef<
                           </FormItem>
                         )}
                       />
+
+                    </FieldGroup>
+                  </TabsContent>
+
+                  <TabsContent value='video_per_second' className='pt-0'>
+                    <FieldGroup className='gap-5'>
+                      <FormField
+                        control={form.control}
+                        name='videoPrice480p'
+                        render={({ field }) => (
+                          <FormItem className='contents'>
+                            <Field>
+                              <div className='flex items-center justify-between gap-3'>
+                                <FieldLabel>480p</FieldLabel>
+                                {renderVideoResolutionToggle('480p')}
+                              </div>
+                              <FormControl>
+                                <InputGroup>
+                                  <InputGroupAddon>$</InputGroupAddon>
+                                  <InputGroupInput
+                                    {...field}
+                                    inputMode='decimal'
+                                    value={
+                                      videoResolutionEnabled['480p']
+                                        ? field.value
+                                        : ''
+                                    }
+                                    placeholder={
+                                      videoResolutionEnabled['480p']
+                                        ? '0.03'
+                                        : t('Disabled')
+                                    }
+                                    disabled={!videoResolutionEnabled['480p']}
+                                    onChange={(event) => {
+                                      const value = event.target.value
+                                      if (numericDraftRegex.test(value)) {
+                                        field.onChange(value)
+                                      }
+                                    }}
+                                  />
+                                  <InputGroupAddon align='inline-end'>
+                                    {t('每秒')}
+                                  </InputGroupAddon>
+                                </InputGroup>
+                              </FormControl>
+                              <FieldDescription>
+                                {videoResolutionEnabled['480p']
+                                  ? t('Video generation price 每秒.')
+                                  : t('Disabled')}
+                              </FieldDescription>
+                              <FormMessage />
+                            </Field>
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name='videoPrice720p'
+                        render={({ field }) => (
+                          <FormItem className='contents'>
+                            <Field>
+                              <div className='flex items-center justify-between gap-3'>
+                                <FieldLabel>720p</FieldLabel>
+                                {renderVideoResolutionToggle('720p')}
+                              </div>
+                              <FormControl>
+                                <InputGroup>
+                                  <InputGroupAddon>$</InputGroupAddon>
+                                  <InputGroupInput
+                                    {...field}
+                                    inputMode='decimal'
+                                    value={
+                                      videoResolutionEnabled['720p']
+                                        ? field.value
+                                        : ''
+                                    }
+                                    placeholder={
+                                      videoResolutionEnabled['720p']
+                                        ? '0.05'
+                                        : t('Disabled')
+                                    }
+                                    disabled={!videoResolutionEnabled['720p']}
+                                    onChange={(event) => {
+                                      const value = event.target.value
+                                      if (numericDraftRegex.test(value)) {
+                                        field.onChange(value)
+                                      }
+                                    }}
+                                  />
+                                  <InputGroupAddon align='inline-end'>
+                                    {t('每秒')}
+                                  </InputGroupAddon>
+                                </InputGroup>
+                              </FormControl>
+                              <FieldDescription>
+                                {videoResolutionEnabled['720p']
+                                  ? t('Video generation price 每秒.')
+                                  : t('Disabled')}
+                              </FieldDescription>
+                              <FormMessage />
+                            </Field>
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name='videoPrice1080p'
+                        render={({ field }) => (
+                          <FormItem className='contents'>
+                            <Field>
+                              <div className='flex items-center justify-between gap-3'>
+                                <FieldLabel>1080p</FieldLabel>
+                                {renderVideoResolutionToggle('1080p')}
+                              </div>
+                              <FormControl>
+                                <InputGroup>
+                                  <InputGroupAddon>$</InputGroupAddon>
+                                  <InputGroupInput
+                                    {...field}
+                                    inputMode='decimal'
+                                    value={
+                                      videoResolutionEnabled['1080p']
+                                        ? field.value
+                                        : ''
+                                    }
+                                    placeholder={
+                                      videoResolutionEnabled['1080p']
+                                        ? '0.08'
+                                        : t('Disabled')
+                                    }
+                                    disabled={!videoResolutionEnabled['1080p']}
+                                    onChange={(event) => {
+                                      const value = event.target.value
+                                      if (numericDraftRegex.test(value)) {
+                                        field.onChange(value)
+                                      }
+                                    }}
+                                  />
+                                  <InputGroupAddon align='inline-end'>
+                                    {t('每秒')}
+                                  </InputGroupAddon>
+                                </InputGroup>
+                              </FormControl>
+                              <FieldDescription>
+                                {videoResolutionEnabled['1080p']
+                                  ? t('Video generation price 每秒.')
+                                  : t('Disabled')}
+                              </FieldDescription>
+                              <FormMessage />
+                            </Field>
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name='videoPrice4k'
+                        render={({ field }) => (
+                          <FormItem className='contents'>
+                            <Field>
+                              <div className='flex items-center justify-between gap-3'>
+                                <FieldLabel>4K</FieldLabel>
+                                {renderVideoResolutionToggle('4k')}
+                              </div>
+                              <FormControl>
+                                <InputGroup>
+                                  <InputGroupAddon>$</InputGroupAddon>
+                                  <InputGroupInput
+                                    {...field}
+                                    inputMode='decimal'
+                                    value={
+                                      videoResolutionEnabled['4k']
+                                        ? field.value
+                                        : ''
+                                    }
+                                    placeholder={
+                                      videoResolutionEnabled['4k']
+                                        ? '0.00'
+                                        : t('Disabled')
+                                    }
+                                    disabled={!videoResolutionEnabled['4k']}
+                                    onChange={(event) => {
+                                      const value = event.target.value
+                                      if (numericDraftRegex.test(value)) {
+                                        field.onChange(value)
+                                      }
+                                    }}
+                                  />
+                                  <InputGroupAddon align='inline-end'>
+                                    {t('每秒')}
+                                  </InputGroupAddon>
+                                </InputGroup>
+                              </FormControl>
+                              <FieldDescription>
+                                {videoResolutionEnabled['4k']
+                                  ? t('Video generation price 每秒.')
+                                  : t('Disabled')}
+                              </FieldDescription>
+                              <FormMessage />
+                            </Field>
+                          </FormItem>
+                        )}
+                      />
                     </FieldGroup>
                   </TabsContent>
 
@@ -650,6 +1106,73 @@ export const ModelPricingEditorPanel = forwardRef<
                         onRequestRuleExprChange={setRequestRuleExpr}
                       />
                     </FieldGroup>
+                  </TabsContent>
+                  <TabsContent value='image_quality' className='pt-0'>
+                <div className='rounded-lg border p-3'>
+                  <div className='flex items-start justify-between gap-3'>
+                    <div className='space-y-1'>
+                      <div className='text-sm font-medium'>{t('生图品质定价')}</div>
+                      <p className='text-muted-foreground text-xs'>
+                        {t('开启后，该生图模型会按照请求中的 quality 和 size 匹配价格计费。')}
+                      </p>
+                    </div>
+                  </div>
+
+                    <div className='mt-4 space-y-4'>
+                      {IMAGE_QUALITY_LEVELS.map((quality) => (
+                        <div key={quality} className='space-y-2'>
+                          <div className='text-sm font-medium'>{quality}</div>
+                          <div className='grid grid-cols-3 gap-2'>
+                            {IMAGE_RESOLUTION_LEVELS.map((resolution) => (
+                              <div
+                                key={`${quality}-${resolution}`}
+                                className='space-y-1'
+                              >
+                                <FieldLabel className='text-xs uppercase'>
+                                  {resolution}
+                                </FieldLabel>
+                                <InputGroup>
+                                  <InputGroupAddon>$</InputGroupAddon>
+                                  <InputGroupInput
+                                    inputMode='decimal'
+                                    placeholder='0.00'
+                                    value={
+                                      imageQualityPriceDraft[quality][resolution]
+                                    }
+                                    onChange={(event) =>
+                                      handleImageQualityPriceChange(
+                                        quality,
+                                        resolution,
+                                        event.target.value
+                                      )
+                                    }
+                                  />
+                                </InputGroup>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                      <p className='text-muted-foreground text-xs'>
+                        {t('最终费用 = 对应品质分辨率单价 × 图片数量 n。用户专属品质密价优先级高于这里的公开价格。')}
+                      </p>
+                    </div>
+
+                  <div className='mt-4 flex justify-end'>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      onClick={saveImageQualityPricing}
+                      disabled={
+                        isSavingImageQualityPricing || !form.watch('name')
+                      }
+                    >
+                        {isSavingImageQualityPricing
+                          ? t('Saving...')
+                          : t('保存生图品质定价')}
+                    </Button>
+                  </div>
+                </div>
                   </TabsContent>
                 </Tabs>
               </FieldGroup>

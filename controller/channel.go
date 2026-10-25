@@ -81,13 +81,27 @@ func applyChannelStatusFilter(query *gorm.DB, statusFilter int) *gorm.DB {
 	return query
 }
 
-func buildChannelListQuery(group string, statusFilter int, typeFilter int) *gorm.DB {
+const uncategorizedChannelFilter = "__uncategorized__"
+
+func applyChannelCategoryFilter(query *gorm.DB, category string) *gorm.DB {
+	category = strings.TrimSpace(category)
+	if category == "" || strings.EqualFold(category, "all") {
+		return query
+	}
+	if category == uncategorizedChannelFilter {
+		return query.Where("category IS NULL OR TRIM(category) = ''")
+	}
+	return query.Where("category = ?", category)
+}
+
+func buildChannelListQuery(group string, statusFilter int, typeFilter int, category string) *gorm.DB {
 	query := model.DB.Model(&model.Channel{})
 	query = model.ApplyChannelGroupFilter(query, group)
 	query = applyChannelStatusFilter(query, statusFilter)
 	if typeFilter >= 0 {
 		query = query.Where("type = ?", typeFilter)
 	}
+	query = applyChannelCategoryFilter(query, category)
 	return query
 }
 
@@ -104,6 +118,7 @@ func GetAllChannels(c *gin.Context) {
 	sortOptions := model.NewChannelSortOptions(c.Query("sort_by"), c.Query("sort_order"), idSort)
 	enableTagMode, _ := strconv.ParseBool(c.Query("tag_mode"))
 	groupFilter := model.NormalizeChannelGroupFilter(c.Query("group"))
+	categoryFilter := strings.TrimSpace(c.Query("category"))
 	statusParam := c.Query("status")
 	// statusFilter: -1 all, 1 enabled, 0 disabled (include auto & manual)
 	statusFilter := parseStatusFilter(statusParam)
@@ -119,13 +134,13 @@ func GetAllChannels(c *gin.Context) {
 	var total int64
 
 	if enableTagMode {
-		tags, err := model.GetPaginatedChannelTags(buildChannelListQuery(groupFilter, statusFilter, typeFilter), pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+		tags, err := model.GetPaginatedChannelTags(buildChannelListQuery(groupFilter, statusFilter, typeFilter, categoryFilter), pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 		if err != nil {
 			common.SysError("failed to get paginated tags: " + err.Error())
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取标签失败，请稍后重试"})
 			return
 		}
-		total, err = model.CountChannelTags(buildChannelListQuery(groupFilter, statusFilter, typeFilter))
+		total, err = model.CountChannelTags(buildChannelListQuery(groupFilter, statusFilter, typeFilter, categoryFilter))
 		if err != nil {
 			common.SysError("failed to count tags: " + err.Error())
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取标签数量失败，请稍后重试"})
@@ -136,7 +151,7 @@ func GetAllChannels(c *gin.Context) {
 				continue
 			}
 			var tagChannels []*model.Channel
-			err := sortOptions.Apply(buildChannelListQuery(groupFilter, statusFilter, typeFilter).Where("tag = ?", *tag)).
+			err := sortOptions.Apply(buildChannelListQuery(groupFilter, statusFilter, typeFilter, categoryFilter).Where("tag = ?", *tag)).
 				Omit("key").
 				Find(&tagChannels).Error
 			if err != nil {
@@ -147,13 +162,13 @@ func GetAllChannels(c *gin.Context) {
 			channelData = append(channelData, tagChannels...)
 		}
 	} else {
-		if err := buildChannelListQuery(groupFilter, statusFilter, typeFilter).Count(&total).Error; err != nil {
+		if err := buildChannelListQuery(groupFilter, statusFilter, typeFilter, categoryFilter).Count(&total).Error; err != nil {
 			common.SysError("failed to count channels: " + err.Error())
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取渠道数量失败，请稍后重试"})
 			return
 		}
 
-		err := sortOptions.Apply(buildChannelListQuery(groupFilter, statusFilter, typeFilter)).
+		err := sortOptions.Apply(buildChannelListQuery(groupFilter, statusFilter, typeFilter, categoryFilter)).
 			Limit(pageInfo.GetPageSize()).
 			Offset(pageInfo.GetStartIdx()).
 			Omit("key").
@@ -169,7 +184,7 @@ func GetAllChannels(c *gin.Context) {
 		clearChannelInfo(datum)
 	}
 
-	countQuery := buildChannelListQuery(groupFilter, statusFilter, -1)
+	countQuery := buildChannelListQuery(groupFilter, statusFilter, -1, categoryFilter)
 	var results []struct {
 		Type  int64
 		Count int64
@@ -183,12 +198,31 @@ func GetAllChannels(c *gin.Context) {
 	for _, r := range results {
 		typeCounts[r.Type] = r.Count
 	}
+	var categoryResults []struct {
+		Category string
+		Count    int64
+	}
+	categoryCountQuery := buildChannelListQuery(groupFilter, statusFilter, typeFilter, "")
+	categoryGroupExpression := "COALESCE(NULLIF(TRIM(category), ''), '__uncategorized__')"
+	if err := categoryCountQuery.
+		Select(categoryGroupExpression + " AS category, count(*) AS count").
+		Group(categoryGroupExpression).
+		Find(&categoryResults).Error; err != nil {
+		common.SysError("failed to count channel categories: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取渠道分类统计失败，请稍后重试"})
+		return
+	}
+	categoryCounts := make(map[string]int64)
+	for _, result := range categoryResults {
+		categoryCounts[result.Category] = result.Count
+	}
 	common.ApiSuccess(c, gin.H{
-		"items":       channelData,
-		"total":       total,
-		"page":        pageInfo.GetPage(),
-		"page_size":   pageInfo.GetPageSize(),
-		"type_counts": typeCounts,
+		"items":           channelData,
+		"total":           total,
+		"page":            pageInfo.GetPage(),
+		"page_size":       pageInfo.GetPageSize(),
+		"type_counts":     typeCounts,
+		"category_counts": categoryCounts,
 	})
 	return
 }
@@ -275,6 +309,7 @@ func FixChannelsAbilities(c *gin.Context) {
 func SearchChannels(c *gin.Context) {
 	keyword := c.Query("keyword")
 	group := c.Query("group")
+	categoryFilter := strings.TrimSpace(c.Query("category"))
 	modelKeyword := c.Query("model")
 	statusParam := c.Query("status")
 	statusFilter := parseStatusFilter(statusParam)
@@ -294,7 +329,7 @@ func SearchChannels(c *gin.Context) {
 		for _, tag := range tags {
 			if tag != nil && *tag != "" {
 				var tagChannels []*model.Channel
-				err := sortOptions.Apply(buildChannelListQuery(group, -1, -1).Where("tag = ?", *tag)).
+				err := sortOptions.Apply(buildChannelListQuery(group, -1, -1, categoryFilter).Where("tag = ?", *tag)).
 					Omit("key").
 					Find(&tagChannels).Error
 				if err != nil {
@@ -357,6 +392,32 @@ func SearchChannels(c *gin.Context) {
 		channelData = filtered
 	}
 
+	categoryCounts := make(map[string]int64)
+	for _, channel := range channelData {
+		category := strings.TrimSpace(channel.Category)
+		if category == "" {
+			category = uncategorizedChannelFilter
+		}
+		categoryCounts[category]++
+	}
+
+	if categoryFilter != "" && !strings.EqualFold(categoryFilter, "all") {
+		filtered := make([]*model.Channel, 0, len(channelData))
+		for _, channel := range channelData {
+			category := strings.TrimSpace(channel.Category)
+			if categoryFilter == uncategorizedChannelFilter {
+				if category == "" {
+					filtered = append(filtered, channel)
+				}
+				continue
+			}
+			if category == categoryFilter {
+				filtered = append(filtered, channel)
+			}
+		}
+		channelData = filtered
+	}
+
 	page, _ := strconv.Atoi(c.DefaultQuery("p", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 	if page < 1 {
@@ -386,9 +447,10 @@ func SearchChannels(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data": gin.H{
-			"items":       pagedData,
-			"total":       total,
-			"type_counts": typeCounts,
+			"items":           pagedData,
+			"total":           total,
+			"type_counts":     typeCounts,
+			"category_counts": categoryCounts,
 		},
 	})
 	return
@@ -474,6 +536,10 @@ func validateTwoFactorAuth(twoFA *model.TwoFA, code string) bool {
 func validateChannel(channel *model.Channel, isAdd bool) error {
 	if channel == nil {
 		return fmt.Errorf("channel cannot be empty")
+	}
+	channel.Category = strings.TrimSpace(channel.Category)
+	if len([]rune(channel.Category)) > 64 {
+		return fmt.Errorf("渠道分类不能超过 64 个字符")
 	}
 
 	// 校验 channel settings
@@ -1095,6 +1161,9 @@ func UpdateChannel(c *gin.Context) {
 	}
 	if channel.Group != originChannel.Group {
 		changedFields = append(changedFields, "group")
+	}
+	if channel.Category != originChannel.Category {
+		changedFields = append(changedFields, "category")
 	}
 	if channel.Type != originChannel.Type {
 		changedFields = append(changedFields, "type")

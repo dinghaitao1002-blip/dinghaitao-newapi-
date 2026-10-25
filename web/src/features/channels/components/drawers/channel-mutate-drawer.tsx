@@ -2030,6 +2030,28 @@ export function ChannelMutateDrawer({
                               </FormItem>
                             )}
                           />
+
+                          <FormField
+                            control={form.control}
+                            name='category'
+                            render={({ field }) => (
+                              <FormItem className='sm:col-span-2'>
+                                <FormLabel>{t('Channel Category')}</FormLabel>
+                                <FormControl>
+                                  <Input
+                                    placeholder={t('For example: 1K or Banana')}
+                                    {...field}
+                                  />
+                                </FormControl>
+                                <FormDescription>
+                                  {t(
+                                    'Used only to organize the admin channel list. It does not affect routing, billing, or user groups.'
+                                  )}
+                                </FormDescription>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
                         </div>
 
                         {!isEditing && (

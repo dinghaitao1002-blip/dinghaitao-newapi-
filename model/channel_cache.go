@@ -28,6 +28,10 @@ func InitChannelCache() {
 		InvalidatePricingCache()
 		return
 	}
+	// Serialize database snapshots with persistent channel status changes. A
+	// snapshot read before a quota stop must not publish an enabled channel later.
+	channelStatusLock.Lock()
+	defer channelStatusLock.Unlock()
 	newChannelId2channel := make(map[int]*Channel)
 	newChannel2advancedCustomConfig := make(map[int]*dto.AdvancedCustomConfig)
 	var channels []*Channel
@@ -128,6 +132,7 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
 	}
+	channels = common.FilterUsableChannelIDs(channels, model)
 
 	if len(channels) == 0 {
 		return nil, nil

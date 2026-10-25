@@ -31,7 +31,12 @@ import {
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
 import { isTokenBasedModel } from '../lib/model-helpers'
-import { formatPrice, formatRequestPrice } from '../lib/price'
+import {
+  formatPrice,
+  formatRequestPrice,
+  formatVideoSecondPrice,
+  isVideoPerSecondModel,
+} from '../lib/price'
 import type { PricingModel, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelPerfBadge, type ModelPerfBadgeData } from './model-perf-badge'
@@ -54,7 +59,9 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const priceRate = props.priceRate ?? 1
   const usdExchangeRate = props.usdExchangeRate ?? 1
   const showRechargePrice = props.showRechargePrice ?? false
-  const isTokenBased = isTokenBasedModel(props.model)
+  const isImageQualityPricing = Boolean(props.model.image_quality_pricing_enabled)
+  const isVideoPerSecond = isVideoPerSecondModel(props.model)
+  const isTokenBased = !isImageQualityPricing && !isVideoPerSecond && isTokenBasedModel(props.model)
   const tokenUnitLabel = tokenUnit === 'K' ? '1K' : '1M'
   const tags = parseTags(props.model.tags)
   const groups = props.model.enable_groups || []
@@ -92,7 +99,15 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   }
 
   let priceSummary: ReactNode
-  if (dynamicSummary) {
+  if (isImageQualityPricing) {
+    priceSummary = (
+      <span className='text-muted-foreground whitespace-nowrap'>
+        <span className='text-foreground font-medium'>
+          {t('按品质收费')}
+        </span>
+      </span>
+    )
+  } else if (dynamicSummary) {
     if (dynamicSummary.isSpecialExpression) {
       priceSummary = (
         <span className='min-w-0'>
@@ -127,6 +142,30 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         </span>
       )
     }
+  } else if (isVideoPerSecond) {
+    priceSummary = (
+      <>
+        {(['480p', '720p', '1080p', '4k'] as const).map((resolution) => (
+          <span
+            key={resolution}
+            className='text-muted-foreground whitespace-nowrap'
+          >
+            {resolution === '4k' ? '4K' : resolution}{' '}
+            <span className='text-foreground font-mono font-semibold'>
+              {formatVideoSecondPrice(
+                props.model,
+                resolution,
+                showRechargePrice,
+                priceRate,
+                usdExchangeRate,
+                props.selectedGroup
+              )}
+            </span>{' '}
+            / {t('second')}
+          </span>
+        ))}
+      </>
+    )
   } else if (isTokenBased) {
     priceSummary = (
       <>
@@ -254,6 +293,11 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
             </span>
           )}
           <ModelBillingModeBadge model={props.model} />
+          {isImageQualityPricing && (
+            <span className='rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300'>
+              {t('按品质收费')}
+            </span>
+          )}
         </div>
         <ModelPerfBadge perf={props.perf} className='row-span-2 self-start' />
 

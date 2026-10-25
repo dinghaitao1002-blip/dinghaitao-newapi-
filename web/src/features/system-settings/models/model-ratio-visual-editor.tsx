@@ -273,7 +273,9 @@ const ModelRatioVisualEditorComponent = forwardRef<
         (acc, model) => {
           const mode =
             model.billingMode === 'per-request' ||
-            model.billingMode === 'tiered_expr'
+            model.billingMode === 'tiered_expr' ||
+            model.billingMode === 'video_per_second' ||
+            model.billingMode === 'image_quality'
               ? model.billingMode
               : 'per-token'
           acc[mode] += 1
@@ -283,7 +285,12 @@ const ModelRatioVisualEditorComponent = forwardRef<
           'per-token': 0,
           'per-request': 0,
           tiered_expr: 0,
-        } as Record<'per-token' | 'per-request' | 'tiered_expr', number>
+          video_per_second: 0,
+          image_quality: 0,
+        } as Record<
+          'per-token' | 'per-request' | 'tiered_expr' | 'video_per_second' | 'image_quality',
+          number
+        >
       ),
     [models]
   )
@@ -292,7 +299,11 @@ const ModelRatioVisualEditorComponent = forwardRef<
     (model: ModelRow) => {
       const editableModel = model.draft ?? model.saved ?? model
       let editBillingMode: PricingMode = 'per-token'
-      if (editableModel.billingMode === 'tiered_expr') {
+      if (editableModel.billingMode === 'image_quality') {
+        editBillingMode = 'image_quality'
+      } else if (editableModel.billingMode === 'video_per_second') {
+        editBillingMode = 'video_per_second'
+      } else if (editableModel.billingMode === 'tiered_expr') {
         editBillingMode = 'tiered_expr'
       } else if (editableModel.price && editableModel.price !== '') {
         editBillingMode = 'per-request'
@@ -310,6 +321,10 @@ const ModelRatioVisualEditorComponent = forwardRef<
         billingMode: editBillingMode,
         billingExpr: editableModel.billingExpr,
         requestRuleExpr: editableModel.requestRuleExpr,
+        videoPrice480p: editableModel.videoPrice480p,
+        videoPrice720p: editableModel.videoPrice720p,
+        videoPrice1080p: editableModel.videoPrice1080p,
+        videoPrice4k: editableModel.videoPrice4k,
       })
       setEditorOpen(true)
       if (isMobile) setSheetOpen(true)
@@ -564,6 +579,18 @@ const ModelRatioVisualEditorComponent = forwardRef<
           setIfPresent(imageMap, name, data.imageRatio)
           setIfPresent(audioMap, name, data.audioRatio)
           setIfPresent(audioCompletionMap, name, data.audioCompletionRatio)
+        } else if (data.billingMode === 'image_quality') {
+          billingModeMap[name] = 'image_quality'
+        } else if (data.billingMode === 'video_per_second') {
+          billingModeMap[name] = 'video_per_second'
+          billingExprMap[name] =
+            data.billingExpr ||
+            JSON.stringify({
+              '480p': Number(data.videoPrice480p || 0),
+              '720p': Number(data.videoPrice720p || 0),
+              '1080p': Number(data.videoPrice1080p || 0),
+              '4k': Number(data.videoPrice4k || 0),
+            })
         } else if (data.price && data.price !== '') {
           setIfPresent(priceMap, name, data.price)
         } else {
@@ -702,6 +729,11 @@ const ModelRatioVisualEditorComponent = forwardRef<
                     value: 'tiered_expr',
                     count: modeCounts.tiered_expr,
                   },
+                  {
+                    label: '按秒',
+                    value: 'video_per_second',
+                    count: modeCounts.video_per_second,
+                  },
                 ],
               },
             ]}
@@ -775,11 +807,11 @@ const ModelRatioVisualEditorComponent = forwardRef<
         <div className='hidden min-h-0 min-w-0 md:block'>
           {editorOpen ? (
             <ModelPricingEditorPanel
-              ref={editorPanelRef}
-              editData={editData}
-              onSave={onSave}
-              isSaving={isSaving}
-              className='h-full min-h-0'
+                ref={editorPanelRef}
+                editData={editData}
+                onSave={onSave}
+                isSaving={isSaving}
+                className='h-full min-h-0'
             />
           ) : (
             <div className='bg-card text-muted-foreground flex h-full min-h-0 flex-col items-center justify-center gap-3 rounded-xl border border-dashed p-6 text-center'>

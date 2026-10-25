@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -36,7 +37,15 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 	var err *types.NewAPIError
 	switch info.RelayMode {
 	case relayconstant.RelayModeImagesGenerations, relayconstant.RelayModeImagesEdits:
+		// Image providers can otherwise leave a request waiting indefinitely. Keep
+		// the timeout scoped to this attempt so the existing retry loop can switch
+		// to the next eligible channel without affecting text, audio, or video.
+		originalRequest := c.Request
+		ctx, cancel := context.WithTimeout(originalRequest.Context(), 60*time.Second)
+		c.Request = originalRequest.Clone(ctx)
 		err = relay.ImageHelper(c, info)
+		cancel()
+		c.Request = originalRequest
 	case relayconstant.RelayModeAudioSpeech:
 		fallthrough
 	case relayconstant.RelayModeAudioTranslation:
@@ -189,6 +198,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
+	forcedCircuitRetryUsed := false
+	forcedQuotaRetryUsed := false
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
@@ -224,6 +235,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		if newAPIError == nil {
+			common.ResetChannelCircuitOnSuccess(channel.Id, relayInfo.OriginModelName)
 			relayInfo.LastError = nil
 			return
 		}
@@ -231,7 +243,42 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
+		quotaExhausted := service.IsChannelQuotaExhausted(channel.Id, newAPIError)
+		quotaStopped := false
+		if quotaExhausted {
+			var stopErr error
+			quotaStopped, stopErr = model.StopChannelForQuotaExhaustion(channel.Id)
+			if stopErr != nil {
+				logger.LogError(c, fmt.Sprintf("failed to persist upstream quota stop: channel #%d: %v", channel.Id, stopErr))
+			} else {
+				logger.LogWarn(c, fmt.Sprintf("channel #%d stopped: upstream quota exhausted; manual recharge and enable required", channel.Id))
+			}
+		}
+
+		failureCount, circuitTripped := common.RecordChannelCircuitFailure(channel.Id, relayInfo.OriginModelName, newAPIError.StatusCode, newAPIError.Error())
+		if circuitTripped {
+			logger.LogWarn(c, fmt.Sprintf("channel circuit opened: channel #%d, model %s, consecutive failures %d, cooldown %s", channel.Id, relayInfo.OriginModelName, failureCount, common.ChannelCircuitCooldown))
+		}
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
+
+		if quotaExhausted {
+			// One extra attempt covers a 402 on the last ordinary retry. Stop
+			// routing the depleted channel before attempting the same model/group.
+			if !quotaStopped || !shouldRetryQuotaExhaustion(c, newAPIError) {
+				break
+			}
+			if !forcedQuotaRetryUsed {
+				forcedQuotaRetryUsed = true
+				retryParam.ResetRetryNextTry()
+				continue
+			}
+		}
+
+		if circuitTripped && !forcedCircuitRetryUsed {
+			forcedCircuitRetryUsed = true
+			retryParam.ResetRetryNextTry()
+			continue
+		}
 
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
@@ -334,7 +381,14 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if types.IsChannelError(openaiErr) {
 		return true
 	}
-	if types.IsSkipRetryError(openaiErr) {
+	// Transport/context timeouts are wrapped as do_request_failed and carry the
+	// skip-retry flag for safe defaults. They are transient failures, so allow
+	// the normal channel failover path to handle them.
+	isTimeout := errors.Is(openaiErr.Err, context.DeadlineExceeded) ||
+		strings.Contains(strings.ToLower(openaiErr.Error()), "timeout") ||
+		strings.Contains(strings.ToLower(openaiErr.Error()), "timed out") ||
+		strings.Contains(openaiErr.Error(), "超时")
+	if types.IsSkipRetryError(openaiErr) && !isTimeout {
 		return false
 	}
 	if retryTimes <= 0 {
@@ -354,6 +408,18 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	return operation_setting.ShouldRetryByStatusCode(code)
+}
+
+// An upstream rejection is replayable only before a response is sent and
+// while the client remains connected. Honor channel pinning and retry policy.
+func shouldRetryQuotaExhaustion(c *gin.Context, err *types.NewAPIError) bool {
+	if c.Writer.Written() || c.Request == nil || c.Request.Context().Err() != nil {
+		return false
+	}
+	if _, pinned := c.Get("specific_channel_id"); pinned {
+		return false
+	}
+	return shouldRetry(c, err, 1)
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
@@ -516,6 +582,7 @@ func RelayTask(c *gin.Context) {
 		RequestPath: c.Request.URL.Path,
 		Retry:       common.GetPointer(0),
 	}
+	forcedCircuitRetryUsed := false
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		var channel *model.Channel
@@ -552,14 +619,23 @@ func RelayTask(c *gin.Context) {
 
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
 		if taskErr == nil {
+			common.ResetChannelCircuitOnSuccess(channel.Id, relayInfo.OriginModelName)
 			break
 		}
 
+		circuitTripped := false
 		if !taskErr.LocalError {
+			_, circuitTripped = common.RecordChannelCircuitFailure(channel.Id, relayInfo.OriginModelName, taskErr.StatusCode, taskErr.Error.Error())
 			processChannelError(c,
 				*types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey,
 					common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()),
 				types.NewOpenAIError(taskErr.Error, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode))
+		}
+		if circuitTripped && !forcedCircuitRetryUsed {
+			forcedCircuitRetryUsed = true
+			relayInfo.LockedChannel = nil
+			retryParam.ResetRetryNextTry()
+			continue
 		}
 
 		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {

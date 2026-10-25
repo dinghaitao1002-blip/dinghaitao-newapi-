@@ -257,10 +257,14 @@ func ParseMultipartFormReusable(c *gin.Context) (*multipart.Form, error) {
 	if err != nil {
 		return nil, err
 	}
-	requestBody, err := storage.Bytes()
+	// Parse from an independent reader instead of storage.Bytes(): a
+	// disk-backed body would otherwise be materialised on the heap just to
+	// be parsed.
+	requestBody, err := storage.NewReader()
 	if err != nil {
 		return nil, err
 	}
+	defer requestBody.Close()
 
 	// Use the original Content-Type saved on first call to avoid boundary
 	// mismatch when callers overwrite c.Request.Header after multipart rebuild.
@@ -276,8 +280,19 @@ func ParseMultipartFormReusable(c *gin.Context) (*multipart.Form, error) {
 		return nil, err
 	}
 
-	reader := multipart.NewReader(bytes.NewReader(requestBody), boundary)
-	form, err := reader.ReadForm(multipartMemoryLimit())
+	// A body the disk cache already spooled to disk keeps its file parts on
+	// disk too (multipart writes parts above maxMemory to temp files), so a
+	// multi-megabyte upload never sits on the heap while the request waits
+	// for upstream. A form the caller attaches to c.Request.MultipartForm is
+	// removed by the BodyStorageCleanup middleware when the request ends
+	// (net/http never sees it: RequestId replaced c.Request with a copy);
+	// any other caller must RemoveAll the form itself.
+	maxMemory := multipartMemoryLimit()
+	if storage.IsDisk() {
+		maxMemory = min(maxMemory, GetDiskCacheThresholdBytes())
+	}
+	reader := multipart.NewReader(requestBody, boundary)
+	form, err := reader.ReadForm(maxMemory)
 	if err != nil {
 		return nil, err
 	}

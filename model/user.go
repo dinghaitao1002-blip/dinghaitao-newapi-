@@ -23,6 +23,7 @@ var userSortColumns = map[string]string{
 	"id":            "id",
 	"username":      "username",
 	"quota":         "quota",
+	"used_quota":    "used_quota",
 	"group":         "group",
 	"created_at":    "created_at",
 	"last_login_at": "last_login_at",
@@ -36,7 +37,10 @@ type UserSortOptions struct {
 func NewUserSortOptions(sortBy string, sortOrder string) UserSortOptions {
 	normalizedSortBy := strings.ToLower(strings.TrimSpace(sortBy))
 	normalizedSortOrder := strings.ToLower(strings.TrimSpace(sortOrder))
-	if _, ok := userSortColumns[normalizedSortBy]; !ok {
+	if normalizedSortBy == "" {
+		normalizedSortBy = "used_quota"
+		normalizedSortOrder = "desc"
+	} else if _, ok := userSortColumns[normalizedSortBy]; !ok {
 		normalizedSortBy = "id"
 		normalizedSortOrder = "desc"
 	} else if normalizedSortOrder != "asc" {
