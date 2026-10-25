@@ -43,7 +43,7 @@ func invalidateImageAsyncBillingCaches(userID int, tokenKey string) {
 		common.SysLog("image async billing: user cache invalidation failed")
 	}
 	if tokenKey != "" {
-		if err := cacheDeleteToken(tokenKey); err != nil {
+		if err := invalidateTokenCacheForMutation(tokenKey); err != nil {
 			common.SysLog("image async billing: token cache invalidation failed")
 		}
 	}

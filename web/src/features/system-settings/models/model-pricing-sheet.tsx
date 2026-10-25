@@ -17,14 +17,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Save } from 'lucide-react'
 import {
   forwardRef,
   useCallback,
   useEffect,
   useImperativeHandle,
+  useId,
   useMemo,
+  useRef,
   useState,
+  type ReactNode,
 } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -49,11 +53,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from '@/components/ui/input-group'
+import { InputGroup, InputGroupAddon } from '@/components/ui/input-group'
 import {
   Sheet,
   SheetContent,
@@ -63,8 +63,38 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  previewModelPricing,
+  previewModelPricingConversion,
+  type ModelPricingPluginVariant,
+} from '@/features/model-pricing/api'
+import {
+  getSitePricingCurrency,
+  isValidPricingCurrency,
+  USD_PRICING_CURRENCY,
+} from '@/features/model-pricing/currency'
+import { pricingFromDraft, pricingRow } from '@/features/model-pricing/pricing'
+import { PricingAmountInput } from '@/features/model-pricing/pricing-amount-input'
+import {
+  PricingConversionDialog,
+  type PricingConversionPreview,
+} from '@/features/model-pricing/pricing-conversion-dialog'
+import { PricingCurrencySelector } from '@/features/model-pricing/pricing-currency-selector'
+import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
+import { combineBillingExpr } from '@/features/pricing/lib/billing-expr'
+import { pluginExpressionsEqual } from '@/features/pricing/lib/plugin-pricing'
+import {
+  createDefaultTaskVisualConfig,
+  generateTaskExprFromConfig,
+} from '@/features/pricing/lib/task-expr'
+import type { BillingUsageSchema } from '@/features/pricing/types'
+import { useDebounce } from '@/hooks/use-debounce'
 import { api } from '@/lib/api'
+import { handleServerError } from '@/lib/handle-server-error'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
+import { usePricingPreferencesStore } from '@/stores/pricing-preferences-store'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
   EMPTY_LANE_ENABLED,
@@ -74,9 +104,9 @@ import {
   createModelPricingSchema,
   hasValue,
   laneConfigs,
-  numericDraftRegex,
   ratioFieldByLane,
   toNumberOrNull,
+  usesTaskModelPricing,
   type LaneKey,
   type ModelPricingFormValues,
   type ModelRatioData,
@@ -84,16 +114,23 @@ import {
 } from './model-pricing-core'
 import { PriceInput, PriceLane } from './model-pricing-inputs'
 import { formatPricingNumber } from './pricing-format'
+import { TaskPluginPricingEditor } from './task-plugin-pricing-editor'
+import { TaskUsagePricingEditor } from './task-usage-pricing-editor'
 import { TieredPricingEditor } from './tiered-pricing-editor'
 
 export type { ModelRatioData } from './model-pricing-core'
+
+const numericDraftRegex = /^\d*\.?\d*$/
 
 const IMAGE_QUALITY_LEVELS = ['low', 'medium', 'high'] as const
 const IMAGE_RESOLUTION_LEVELS = ['1k', '2k', '4k'] as const
 
 type ImageQualityLevel = (typeof IMAGE_QUALITY_LEVELS)[number]
 type ImageResolutionLevel = (typeof IMAGE_RESOLUTION_LEVELS)[number]
-type ImageQualityPriceDraft = Record<ImageQualityLevel, Record<ImageResolutionLevel, string>>
+type ImageQualityPriceDraft = Record<
+  ImageQualityLevel,
+  Record<ImageResolutionLevel, string>
+>
 
 type ImageQualityPriceItem = {
   quality: ImageQualityLevel
@@ -104,7 +141,10 @@ type ImageQualityPriceItem = {
 
 type VideoResolutionKey = '480p' | '720p' | '1080p' | '4k'
 
-function createEmptyVideoResolutionEnabled(): Record<VideoResolutionKey, boolean> {
+function createEmptyVideoResolutionEnabled(): Record<
+  VideoResolutionKey,
+  boolean
+> {
   return {
     '480p': false,
     '720p': false,
@@ -125,7 +165,9 @@ function createEmptyImageQualityPriceDraft(): ImageQualityPriceDraft {
   }
 }
 
-function imageQualityItemsToDraft(items?: ImageQualityPriceItem[]): ImageQualityPriceDraft {
+function imageQualityItemsToDraft(
+  items?: ImageQualityPriceItem[]
+): ImageQualityPriceDraft {
   const draft = createEmptyImageQualityPriceDraft()
   for (const item of items || []) {
     if (
@@ -138,13 +180,15 @@ function imageQualityItemsToDraft(items?: ImageQualityPriceItem[]): ImageQuality
   return draft
 }
 
-
 type ModelPricingSheetProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   editData?: ModelRatioData | null
   onSave?: () => void | Promise<void>
   isSaving?: boolean
+  usageSchema?: BillingUsageSchema
+  pluginVariants?: ModelPricingPluginVariant[]
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 type ModelPricingEditorPanelProps = Omit<
@@ -152,17 +196,30 @@ type ModelPricingEditorPanelProps = Omit<
   'open' | 'onOpenChange'
 > & {
   className?: string
+  embedded?: boolean
+  scrollHeader?: ReactNode
 }
 
 export type ModelPricingEditorPanelHandle = {
   commitDraft: () => Promise<ModelRatioData | null>
 }
 
+const DEFAULT_TOKEN_BILLING_EXPR = 'tier("base", p * 0 + c * 0)'
+
 export const ModelPricingSheet = forwardRef<
   ModelPricingEditorPanelHandle,
   ModelPricingSheetProps
 >(function ModelPricingSheet(
-  { open, onOpenChange, editData, onSave, isSaving },
+  {
+    open,
+    onOpenChange,
+    editData,
+    onSave,
+    isSaving,
+    usageSchema,
+    pluginVariants,
+    onDirtyChange,
+  },
   ref
 ) {
   const { t } = useTranslation()
@@ -182,6 +239,9 @@ export const ModelPricingSheet = forwardRef<
         <ModelPricingEditorPanel
           ref={ref}
           editData={editData}
+          usageSchema={usageSchema}
+          pluginVariants={pluginVariants}
+          onDirtyChange={onDirtyChange}
           onSave={onSave}
           isSaving={isSaving}
           className='h-full rounded-none border-0'
@@ -195,11 +255,33 @@ export const ModelPricingEditorPanel = forwardRef<
   ModelPricingEditorPanelHandle,
   ModelPricingEditorPanelProps
 >(function ModelPricingEditorPanel(
-  { editData, className, onSave, isSaving },
+  {
+    editData,
+    className,
+    onSave,
+    isSaving,
+    usageSchema,
+    pluginVariants,
+    onDirtyChange,
+    embedded = false,
+    scrollHeader,
+  },
   ref
 ) {
   const { t } = useTranslation()
-  const [pricingMode, setPricingMode] = useState<PricingMode>('per-token')
+  const promptPriceId = useId()
+  const formElementRef = useRef<HTMLFormElement>(null)
+  const currencyConfig = useSystemConfigStore((state) => state.config.currency)
+  const preference = usePricingPreferencesStore((state) => state.currency)
+  const siteCurrency = useMemo(
+    () => getSitePricingCurrency(currencyConfig),
+    [currencyConfig]
+  )
+  const currency =
+    preference === 'site' && isValidPricingCurrency(siteCurrency)
+      ? siteCurrency
+      : USD_PRICING_CURRENCY
+  const [pricingMode, setPricingMode] = useState<PricingMode>('tiered_expr')
   const [promptPrice, setPromptPrice] = useState('')
   const [lanePrices, setLanePrices] = useState<Record<LaneKey, string>>({
     ...EMPTY_LANE_PRICES,
@@ -207,17 +289,60 @@ export const ModelPricingEditorPanel = forwardRef<
   const [laneEnabled, setLaneEnabled] = useState<Record<LaneKey, boolean>>({
     ...EMPTY_LANE_ENABLED,
   })
-  const [billingExpr, setBillingExpr] = useState('')
+  const [billingExpr, setBillingExpr] = useState(DEFAULT_TOKEN_BILLING_EXPR)
+  const [conversionReason, setConversionReason] = useState('')
+  const [wasConverted, setWasConverted] = useState(false)
+  const conversionGeneration = useRef(0)
+  const [conversionPreview, setConversionPreview] =
+    useState<PricingConversionPreview | null>(null)
+  const conversion = useMutation({
+    mutationFn: previewModelPricingConversion,
+    meta: { errorToast: false },
+  })
   const [requestRuleExpr, setRequestRuleExpr] = useState('')
+  const [pluginExpressions, setPluginExpressions] = useState<
+    Record<string, string>
+  >({})
   const [editorReloadToken, setEditorReloadToken] = useState(0)
-  const [imageQualityPriceDraft, setImageQualityPriceDraft] = useState<ImageQualityPriceDraft>(() =>
-    createEmptyImageQualityPriceDraft()
-  )
-  const [isSavingImageQualityPricing, setIsSavingImageQualityPricing] = useState(false)
+  const [imageQualityPriceDraft, setImageQualityPriceDraft] =
+    useState<ImageQualityPriceDraft>(() => createEmptyImageQualityPriceDraft())
+  const [savedImageQualityPriceDraft, setSavedImageQualityPriceDraft] =
+    useState<ImageQualityPriceDraft>(createEmptyImageQualityPriceDraft)
+  const [isSavingImageQualityPricing, setIsSavingImageQualityPricing] =
+    useState(false)
   const [videoResolutionEnabled, setVideoResolutionEnabled] = useState<
     Record<VideoResolutionKey, boolean>
   >(() => createEmptyVideoResolutionEnabled())
+  const [ordinaryPricingModel, setOrdinaryPricingModel] = useState<
+    string | null
+  >(null)
+  const autoSwitchedForRef = useRef<string | null>(null)
   const isEditMode = !!editData
+  const hasLegacyPricing =
+    editData &&
+    [
+      editData.price,
+      editData.ratio,
+      editData.completionRatio,
+      editData.cacheRatio,
+      editData.createCacheRatio,
+      editData.imageRatio,
+      editData.audioRatio,
+      editData.audioCompletionRatio,
+    ].some(hasValue)
+  let initialPricingMode: PricingMode = 'tiered_expr'
+  if (
+    editData?.billingMode === 'image_quality' ||
+    editData?.billingMode === 'video_per_second'
+  ) {
+    initialPricingMode = editData.billingMode
+  } else if (editData?.billingMode !== 'tiered_expr' && hasLegacyPricing) {
+    initialPricingMode = hasValue(editData?.price) ? 'per-request' : 'per-token'
+  }
+  const initialBillingExpr =
+    editData?.billingExpr ||
+    (initialPricingMode === 'tiered_expr' ? DEFAULT_TOKEN_BILLING_EXPR : '')
+  const { models: pricingModels } = usePricingData()
 
   const form = useForm<ModelPricingFormValues>({
     resolver: zodResolver(createModelPricingSchema(t)),
@@ -237,12 +362,86 @@ export const ModelPricingEditorPanel = forwardRef<
       videoPrice4k: '',
     },
   })
-
+  const watchedValues = form.watch()
+  let previewRequest = ''
+  if (pricingMode === 'per-token' && watchedValues.name.trim()) {
+    try {
+      previewRequest = JSON.stringify({
+        model_name: watchedValues.name.trim(),
+        pricing: pricingFromDraft({
+          ...watchedValues,
+          billingMode: 'per-token',
+        }),
+      })
+    } catch {
+      // Incomplete numeric input is validated by the editor before saving.
+    }
+  }
+  const debouncedPreviewRequest = useDebounce(previewRequest, 250)
+  const pricePreview = useQuery({
+    queryKey: ['model-pricing-preview', debouncedPreviewRequest],
+    queryFn: () => previewModelPricing(JSON.parse(debouncedPreviewRequest)),
+    enabled:
+      Boolean(debouncedPreviewRequest) &&
+      debouncedPreviewRequest === previewRequest,
+    retry: false,
+    refetchOnWindowFocus: false,
+    meta: { errorToast: false },
+  })
+  const effectivePreview =
+    previewRequest === debouncedPreviewRequest ? pricePreview.data : undefined
+  const usageSchemaByModel = useMemo(
+    () =>
+      new Map(
+        pricingModels.map((model) => [
+          model.model_name,
+          model.billing_usage_schema,
+        ])
+      ),
+    [pricingModels]
+  )
+  const usageExamplesByModel = useMemo(
+    () =>
+      new Map(
+        pricingModels.map((model) => [
+          model.model_name,
+          model.billing_usage_examples,
+        ])
+      ),
+    [pricingModels]
+  )
+  const taskUsageSchema =
+    usageSchema ??
+    pluginVariants?.find((variant) => !variant.stale)?.usage_schema ??
+    usageSchemaByModel.get(watchedValues.name.trim())
+  const taskUsageExamples =
+    usageExamplesByModel.get(watchedValues.name.trim()) ??
+    pluginVariants?.find((variant) => !variant.stale)?.usage_examples
+  const usesTaskPricing =
+    ordinaryPricingModel !== watchedValues.name &&
+    usesTaskModelPricing(editData, taskUsageSchema, pluginVariants)
+  const defaultTaskBillingExpr = useMemo(
+    () =>
+      taskUsageSchema
+        ? generateTaskExprFromConfig(
+            createDefaultTaskVisualConfig(taskUsageSchema),
+            taskUsageSchema
+          )
+        : '',
+    [taskUsageSchema]
+  )
+  const resolvedBillingExpr =
+    usesTaskPricing &&
+    taskUsageSchema &&
+    (!billingExpr || billingExpr === DEFAULT_TOKEN_BILLING_EXPR)
+      ? defaultTaskBillingExpr
+      : billingExpr
 
   useEffect(() => {
     const modelName = editData?.name?.trim()
     if (!modelName) {
       setImageQualityPriceDraft(createEmptyImageQualityPriceDraft())
+      setSavedImageQualityPriceDraft(createEmptyImageQualityPriceDraft())
       return
     }
 
@@ -257,7 +456,9 @@ export const ModelPricingEditorPanel = forwardRef<
           throw new Error(res.data?.message || t('加载生图品质定价失败'))
         }
         const items = (res.data?.data || []) as ImageQualityPriceItem[]
-        setImageQualityPriceDraft(imageQualityItemsToDraft(items))
+        const draft = imageQualityItemsToDraft(items)
+        setImageQualityPriceDraft(draft)
+        setSavedImageQualityPriceDraft(draft)
       } catch {
         if (!cancelled) {
           setImageQualityPriceDraft(createEmptyImageQualityPriceDraft())
@@ -269,9 +470,15 @@ export const ModelPricingEditorPanel = forwardRef<
     return () => {
       cancelled = true
     }
-  }, [editData?.name])
+  }, [editData?.name, t])
 
   useEffect(() => {
+    conversionGeneration.current += 1
+    setConversionReason('')
+    setPluginExpressions(editData?.pluginBillingExpr ?? {})
+    setOrdinaryPricingModel(null)
+    setWasConverted(false)
+    setConversionPreview(null)
     const nextLaneState = createInitialLaneState(editData)
     const nextVideoResolutionEnabled =
       editData?.billingMode === 'video_per_second'
@@ -299,18 +506,8 @@ export const ModelPricingEditorPanel = forwardRef<
         videoPrice1080p: editData.videoPrice1080p || '',
         videoPrice4k: editData.videoPrice4k || '',
       })
-      setPricingMode(
-        editData.billingMode === 'image_quality'
-          ? 'image_quality'
-          : editData.billingMode === 'video_per_second'
-            ? 'video_per_second'
-          : editData.billingMode === 'tiered_expr'
-            ? 'tiered_expr'
-            : editData.price
-              ? 'per-request'
-              : 'per-token'
-      )
-      setBillingExpr(editData.billingExpr || '')
+      setPricingMode(initialPricingMode)
+      setBillingExpr(initialBillingExpr)
       setRequestRuleExpr(editData.requestRuleExpr || '')
     } else {
       form.reset({
@@ -328,8 +525,8 @@ export const ModelPricingEditorPanel = forwardRef<
         videoPrice1080p: '',
         videoPrice4k: '',
       })
-      setPricingMode('per-token')
-      setBillingExpr('')
+      setPricingMode('tiered_expr')
+      setBillingExpr(DEFAULT_TOKEN_BILLING_EXPR)
       setRequestRuleExpr('')
     }
 
@@ -338,7 +535,52 @@ export const ModelPricingEditorPanel = forwardRef<
     setLaneEnabled(nextLaneState.enabled)
     setVideoResolutionEnabled(nextVideoResolutionEnabled)
     setEditorReloadToken((token) => token + 1)
-  }, [editData, form])
+    autoSwitchedForRef.current = null
+  }, [editData, form, initialPricingMode, initialBillingExpr])
+
+  useEffect(() => {
+    if (!editData) return
+    if (
+      ['tiered_expr', 'image_quality', 'video_per_second'].includes(
+        editData.billingMode || ''
+      )
+    ) {
+      return
+    }
+    if (editData.price || editData.ratio) return
+
+    const schema = taskUsageSchema
+    if (!schema || Object.keys(schema).length === 0) return
+    if (autoSwitchedForRef.current === editData.name) return
+
+    setPricingMode('tiered_expr')
+    autoSwitchedForRef.current = editData.name
+  }, [editData, taskUsageSchema])
+
+  useEffect(() => {
+    onDirtyChange?.(
+      form.formState.isDirty ||
+        (pricingMode === 'image_quality' &&
+          JSON.stringify(imageQualityPriceDraft) !==
+            JSON.stringify(savedImageQualityPriceDraft)) ||
+        pricingMode !== initialPricingMode ||
+        billingExpr !== initialBillingExpr ||
+        requestRuleExpr !== (editData?.requestRuleExpr ?? '') ||
+        !pluginExpressionsEqual(pluginExpressions, editData?.pluginBillingExpr)
+    )
+  }, [
+    onDirtyChange,
+    imageQualityPriceDraft,
+    savedImageQualityPriceDraft,
+    form.formState.isDirty,
+    pricingMode,
+    billingExpr,
+    requestRuleExpr,
+    editData,
+    initialPricingMode,
+    initialBillingExpr,
+    pluginExpressions,
+  ])
 
   const setFormValue = (field: keyof ModelPricingFormValues, value: string) => {
     form.setValue(field, value, {
@@ -397,13 +639,11 @@ export const ModelPricingEditorPanel = forwardRef<
   }
 
   const handlePromptPriceChange = (value: string) => {
-    if (!numericDraftRegex.test(value)) return
     setPromptPrice(value)
     syncLaneRatios(value, lanePrices, laneEnabled)
   }
 
   const handleLanePriceChange = (lane: LaneKey, value: string) => {
-    if (!numericDraftRegex.test(value)) return
     const nextLanePrices = { ...lanePrices, [lane]: value }
     setLanePrices(nextLanePrices)
 
@@ -453,10 +693,12 @@ export const ModelPricingEditorPanel = forwardRef<
   }
 
   const handleModeChange = (value: string) => {
+    conversionGeneration.current += 1
+    setConversionReason('')
     const nextMode = value as PricingMode
     setPricingMode(nextMode)
     if (nextMode === 'tiered_expr' && !billingExpr) {
-      setBillingExpr('tier("base", p * 0 + c * 0)')
+      setBillingExpr(defaultTaskBillingExpr || DEFAULT_TOKEN_BILLING_EXPR)
     }
   }
 
@@ -508,11 +750,11 @@ export const ModelPricingEditorPanel = forwardRef<
     }))
   }
 
-  const saveImageQualityPricing = async () => {
+  const saveImageQualityPricing = useCallback(async () => {
     const modelName = form.getValues('name').trim()
     if (!modelName) {
       toast.error(t('Model name is required'))
-      return
+      return false
     }
 
     const prices: ImageQualityPriceItem[] = []
@@ -522,13 +764,12 @@ export const ModelPricingEditorPanel = forwardRef<
         const price = Number(raw)
         if (raw === '' || !Number.isFinite(price) || price < 0) {
           toast.error(t('请完整填写所有品质和分辨率的价格'))
-          return
+          return false
         }
         prices.push({ quality, resolution, price, enabled: true })
       }
     }
 
-    let imageQualityPricingSaved = false
     setIsSavingImageQualityPricing(true)
     try {
       const res = await api.post('/api/models/image-quality-prices', {
@@ -536,53 +777,53 @@ export const ModelPricingEditorPanel = forwardRef<
         enabled: true,
         prices,
       })
-      if (res.data?.success === false) {
-        throw new Error(res.data?.message || t('保存生图品质定价失败'))
-      }
-      imageQualityPricingSaved = true
-
-      // The quality-price matrix and the model billing mode are persisted by
-      // different APIs. Save the outer model form as part of the same user
-      // action so the model immediately leaves the "unset pricing" list.
-      await onSave?.()
-
-      toast.success(t('生图品质定价和计费模式已保存'))
-    } catch (error: any) {
-      const fallbackMessage = imageQualityPricingSaved
-        ? t('品质价格已保存，但模型计费模式保存失败，请重试')
-        : t('保存生图品质定价失败')
-      toast.error(
-        error?.response?.data?.message || error?.message || fallbackMessage
-      )
+      requireServerSuccess(res.data)
+      setSavedImageQualityPriceDraft(imageQualityPriceDraft)
+      return true
+    } catch (error) {
+      handleServerError(error, t('保存生图品质定价失败'))
+      return false
     } finally {
       setIsSavingImageQualityPricing(false)
     }
-  }
+  }, [form, imageQualityPriceDraft, t])
 
-  const watchedValues = form.watch()
-  const previewRows = useMemo(
-    () =>
-      buildPreviewRows(
-        watchedValues,
-        pricingMode,
-        billingExpr,
-        requestRuleExpr,
-        promptPrice,
-        lanePrices,
-        laneEnabled,
-        t
-      ),
-    [
-      billingExpr,
-      laneEnabled,
-      lanePrices,
-      pricingMode,
+  const previewRows = useMemo(() => {
+    let previewLanes = {
       promptPrice,
-      requestRuleExpr,
-      t,
+      prices: lanePrices,
+      enabled: laneEnabled,
+    }
+    if (pricingMode === 'per-token' && effectivePreview) {
+      previewLanes = createInitialLaneState(
+        pricingRow(watchedValues.name, effectivePreview.effective)
+      )
+    }
+    return buildPreviewRows(
       watchedValues,
-    ]
-  )
+      pricingMode,
+      resolvedBillingExpr,
+      requestRuleExpr,
+      previewLanes.promptPrice,
+      previewLanes.prices,
+      previewLanes.enabled,
+      t,
+      currency,
+      effectivePreview?.cacheWriteMode,
+      effectivePreview?.billingDetails
+    )
+  }, [
+    resolvedBillingExpr,
+    laneEnabled,
+    lanePrices,
+    pricingMode,
+    promptPrice,
+    requestRuleExpr,
+    t,
+    watchedValues,
+    currency,
+    effectivePreview,
+  ])
 
   const warnings = useMemo(() => {
     const nextWarnings: string[] = []
@@ -632,6 +873,24 @@ export const ModelPricingEditorPanel = forwardRef<
   const validatePricingValues = useCallback(() => {
     if (
       pricingMode === 'per-token' &&
+      ((toNumberOrNull(promptPrice) === 0 &&
+        laneConfigs.some(
+          ({ key }) =>
+            laneEnabled[key] && (toNumberOrNull(lanePrices[key]) ?? 0) > 0
+        )) ||
+        (toNumberOrNull(lanePrices.audioInput) === 0 &&
+          laneEnabled.audioOutput &&
+          (toNumberOrNull(lanePrices.audioOutput) ?? 0) > 0))
+    ) {
+      form.setError('ratio', {
+        message: t(
+          'Use expression pricing when a dependent price is non-zero and its base price is zero.'
+        ),
+      })
+      return false
+    }
+    if (
+      pricingMode === 'per-token' &&
       toNumberOrNull(promptPrice) === null &&
       laneConfigs.some(
         ({ key }) => laneEnabled[key] && hasValue(lanePrices[key])
@@ -661,6 +920,11 @@ export const ModelPricingEditorPanel = forwardRef<
     (values: ModelPricingFormValues) => {
       const data: ModelRatioData = {
         name: values.name.trim(),
+        ...(editData?.pluginBillingExpr ||
+        pluginVariants?.length ||
+        Object.keys(pluginExpressions).length
+          ? { pluginBillingExpr: pluginExpressions }
+          : {}),
         billingMode: pricingMode,
         price: values.price || '',
         ratio: values.ratio || '',
@@ -685,7 +949,7 @@ export const ModelPricingEditorPanel = forwardRef<
       }
 
       if (pricingMode === 'tiered_expr') {
-        data.billingExpr = billingExpr
+        data.billingExpr = resolvedBillingExpr
         data.requestRuleExpr = requestRuleExpr
       } else if (pricingMode === 'video_per_second') {
         const videoPrices: Record<string, number> = {}
@@ -706,49 +970,214 @@ export const ModelPricingEditorPanel = forwardRef<
 
       return data
     },
-    [billingExpr, pricingMode, requestRuleExpr, videoResolutionEnabled]
+    [
+      pricingMode,
+      requestRuleExpr,
+      resolvedBillingExpr,
+      pluginExpressions,
+      editData,
+      pluginVariants,
+      videoResolutionEnabled,
+    ]
   )
+
+  const convertPricing = async () => {
+    if (
+      conversion.isPending ||
+      conversionPreview ||
+      billingExpr.trim() ||
+      pricingMode === 'tiered_expr'
+    ) {
+      return
+    }
+    if (!(await form.trigger()) || !validatePricingValues()) return
+    const draft = buildSubmitData(form.getValues())
+    const generation = ++conversionGeneration.current
+    setConversionReason('')
+    try {
+      const pricing = pricingFromDraft(draft)
+      const result = await conversion.mutateAsync({
+        model_name: draft.name,
+        pricing,
+      })
+      if (generation !== conversionGeneration.current) return
+      const current = buildSubmitData(form.getValues())
+      if (
+        current.name !== draft.name ||
+        JSON.stringify(pricingFromDraft(current)) !== JSON.stringify(pricing)
+      ) {
+        setConversionReason(
+          'Prices changed while preparing the conversion. Try again.'
+        )
+        return
+      }
+      if (result.unsupported_reason) {
+        setConversionReason(result.unsupported_reason)
+        return
+      }
+      if (!result.expression || !result.effective) {
+        throw new Error(t('Failed to prepare pricing conversion'))
+      }
+      setConversionPreview({
+        modelName: draft.name,
+        effective: result.effective,
+        expression: result.expression,
+        draftFingerprint: JSON.stringify(draft),
+        cacheWriteMode: result.cache_write_mode,
+        billingDetails: result.billing_details,
+      })
+    } catch (error) {
+      handleServerError(error, t('Failed to prepare pricing conversion'))
+    }
+  }
+
+  const applyConversion = () => {
+    if (!conversionPreview) return
+    setConversionPreview(null)
+    if (
+      billingExpr.trim() ||
+      pricingMode === 'tiered_expr' ||
+      JSON.stringify(buildSubmitData(form.getValues())) !==
+        conversionPreview.draftFingerprint
+    ) {
+      setConversionReason(
+        'Prices changed while preparing the conversion. Try again.'
+      )
+      return
+    }
+    setBillingExpr(conversionPreview.expression)
+    setWasConverted(true)
+    setPricingMode('tiered_expr')
+    setEditorReloadToken((token) => token + 1)
+  }
 
   useImperativeHandle(
     ref,
     () => ({
       commitDraft: async () => {
+        if (
+          formElementRef.current?.querySelector('[data-billing-invalid="true"]')
+        ) {
+          return null
+        }
+        const amounts =
+          formElementRef.current?.querySelectorAll<HTMLInputElement>(
+            'input[data-pricing-amount]'
+          )
+        if (amounts && [...amounts].some((input) => !input.reportValidity())) {
+          return null
+        }
         const isValid = await form.trigger()
         if (!isValid || !validatePricingValues()) return null
+        // Commit the separate quality matrix before enabling its model billing
+        // mode in the official versioned pricing API.
+        if (
+          pricingMode === 'image_quality' &&
+          !(await saveImageQualityPricing())
+        ) {
+          return null
+        }
         return buildSubmitData(form.getValues())
       },
     }),
-    [form, validatePricingValues, buildSubmitData]
+    [
+      form,
+      validatePricingValues,
+      buildSubmitData,
+      pricingMode,
+      saveImageQualityPricing,
+    ]
   )
+
+  const configureOrdinaryPricing = () => {
+    const inheritedExpression = combineBillingExpr(
+      resolvedBillingExpr,
+      requestRuleExpr
+    )
+    setPluginExpressions((current) => {
+      const next = { ...current }
+      for (const variant of pluginVariants ?? []) {
+        if (!variant.stale && !Object.hasOwn(next, variant.plugin_key)) {
+          next[variant.plugin_key] = inheritedExpression
+        }
+      }
+      return next
+    })
+    setOrdinaryPricingModel(watchedValues.name)
+    setPricingMode('tiered_expr')
+    setBillingExpr(
+      taskUsageSchema?.image_count?.unit === 'count'
+        ? 'tier("image", fixed(0)) * image_count'
+        : DEFAULT_TOKEN_BILLING_EXPR
+    )
+    setRequestRuleExpr('')
+    setEditorReloadToken((token) => token + 1)
+  }
+
+  const expressionEditor =
+    usesTaskPricing && taskUsageSchema ? (
+      <TaskUsagePricingEditor
+        currency={currency}
+        key={`${editorReloadToken}:${watchedValues.name}`}
+        billingExpr={resolvedBillingExpr}
+        requestRuleExpr={requestRuleExpr}
+        usageSchema={taskUsageSchema}
+        usageExamples={taskUsageExamples}
+        onBillingExprChange={setBillingExpr}
+        onRequestRuleExprChange={setRequestRuleExpr}
+      />
+    ) : (
+      <TieredPricingEditor
+        currency={currency}
+        key={editorReloadToken}
+        modelName={watchedValues.name}
+        billingExpr={billingExpr}
+        requestRuleExpr={requestRuleExpr}
+        onBillingExprChange={setBillingExpr}
+        onRequestRuleExprChange={setRequestRuleExpr}
+      />
+    )
 
   const showActions = Boolean(onSave)
 
   return (
     <div
       className={cn(
-        'bg-background flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border',
+        'bg-background flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border',
         className
       )}
     >
-      <div className='border-b p-4'>
-        <div className='flex flex-wrap items-start justify-between gap-3'>
-          <div className='min-w-0'>
-            <h3 className='truncate text-base font-medium'>
-              {isEditMode ? t('Edit model pricing') : t('Add model pricing')}
-            </h3>
+      {!embedded && (
+        <div className='border-b p-4'>
+          <div className='flex flex-wrap items-start justify-between gap-3'>
+            <div className='min-w-0'>
+              <h3 className='truncate text-base font-medium'>
+                {isEditMode ? t('Edit model pricing') : t('Add model pricing')}
+              </h3>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <Form {...form}>
         <form
+          ref={formElementRef}
           onSubmit={(event) => event.preventDefault()}
           className='flex min-h-0 flex-1 flex-col'
           autoComplete='off'
         >
-          <div className='min-h-0 flex-1 overflow-y-auto p-4 pb-6'>
-            <div className='grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(220px,260px)]'>
-              <FieldGroup>
+          <div
+            role='region'
+            aria-label={
+              isEditMode ? t('Edit model pricing') : t('Add model pricing')
+            }
+            className='@container/pricing-editor min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 pb-6'
+          >
+            {scrollHeader && (
+              <div className='mb-4 space-y-3'>{scrollHeader}</div>
+            )}
+            <div className='grid min-w-0 items-start gap-4 @min-[960px]/pricing-editor:grid-cols-[minmax(0,1fr)_260px]'>
+              <FieldGroup className='min-w-0'>
                 {warnings.length > 0 && (
                   <Alert variant='destructive'>
                     <AlertTriangle data-icon='inline-start' />
@@ -762,67 +1191,194 @@ export const ModelPricingEditorPanel = forwardRef<
                   </Alert>
                 )}
 
-                <FormField
-                  control={form.control}
-                  name='name'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Model name')}</FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder={t('gpt-4')}
-                          {...field}
-                          disabled={isEditMode}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        {t(
-                          'The exact model identifier as used in API requests.'
-                        )}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
+                {!embedded && (
+                  <FormField
+                    control={form.control}
+                    name='name'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Model name')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder={t('gpt-4')}
+                            {...field}
+                            disabled={isEditMode}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'The exact model identifier as used in API requests.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+
+                <PricingCurrencySelector siteCurrency={siteCurrency} />
+
+                <TaskPluginPricingEditor
+                  key={`${editorReloadToken}:${watchedValues.name}`}
+                  variants={pluginVariants ?? []}
+                  expressions={pluginExpressions}
+                  onChange={setPluginExpressions}
+                  modelExpression={combineBillingExpr(
+                    resolvedBillingExpr,
+                    requestRuleExpr
                   )}
-                />
-
-                <Tabs
-                  value={pricingMode}
-                  onValueChange={handleModeChange}
-                  className='gap-4'
+                  modelBillingMode={
+                    pricingMode === 'tiered_expr' ? 'tiered_expr' : 'ratio'
+                  }
+                  currency={currency}
+                  ordinaryPricing={!usesTaskPricing}
+                  onConfigureOrdinaryPricing={configureOrdinaryPricing}
                 >
-                  <TabsList className='grid w-full grid-cols-5'>
-                    <TabsTrigger value='per-token'>
-                      {t('Per-token')}
-                    </TabsTrigger>
-                    <TabsTrigger value='per-request'>
-                      {t('Per-request')}
-                    </TabsTrigger>
-                    <TabsTrigger value='tiered_expr'>
-                      {t('Expression')}
-                    </TabsTrigger>
-                    <TabsTrigger value='video_per_second'>
-                      {t('按秒')}
-                    </TabsTrigger>
-                    <TabsTrigger value='image_quality'>
-                      {t('按品质')}
-                    </TabsTrigger>
-                  </TabsList>
+                  <Tabs
+                    key={editorReloadToken}
+                    value={pricingMode}
+                    onValueChange={handleModeChange}
+                    className='gap-4'
+                  >
+                    <TabsList className='w-full flex-wrap group-data-horizontal/tabs:h-auto'>
+                      <TabsTrigger value='tiered_expr'>
+                        {t('Expression')}
+                      </TabsTrigger>
+                      <TabsTrigger value='per-token'>
+                        {t('Per-token (deprecated)')}
+                      </TabsTrigger>
+                      <TabsTrigger value='per-request'>
+                        {t('Per-request (deprecated)')}
+                      </TabsTrigger>
+                      <TabsTrigger value='video_per_second'>
+                        {t('按秒')}
+                      </TabsTrigger>
+                      <TabsTrigger value='image_quality'>
+                        {t('按品质')}
+                      </TabsTrigger>
+                    </TabsList>
 
-                  <TabsContent value='per-token' className='pt-0'>
-                    <FieldGroup className='gap-5'>
-                      <Field>
-                        <FieldLabel>{t('Input price')}</FieldLabel>
-                        <PriceInput
-                          value={promptPrice}
-                          placeholder='3'
-                          onChange={handlePromptPriceChange}
-                        />
-                        <FieldDescription>
-                          {t('USD price per 1M input tokens.')}
-                        </FieldDescription>
-                      </Field>
+                    {(pricingMode === 'per-token' ||
+                      pricingMode === 'per-request') && (
+                      <Alert className='border-amber-500/40 bg-amber-500/10 p-4 text-amber-900 dark:text-amber-100'>
+                        <AlertTriangle aria-hidden='true' className='size-5' />
+                        <AlertDescription className='space-y-3 text-sm text-inherit'>
+                          <p className='font-medium'>
+                            {t(
+                              'Legacy pricing is deprecated. Convert the current prices to an expression draft, then save to apply it.'
+                            )}
+                          </p>
+                          <Button
+                            type='button'
+                            className='w-full sm:w-auto'
+                            disabled={
+                              conversion.isPending ||
+                              Boolean(billingExpr.trim())
+                            }
+                            onClick={() => void convertPricing()}
+                          >
+                            {conversion.isPending
+                              ? t('Preparing conversion...')
+                              : t('Convert to expression')}
+                          </Button>
+                          {billingExpr.trim() && (
+                            <p>
+                              {t(
+                                'An expression draft already exists. Open the Expression tab to keep editing it.'
+                              )}
+                            </p>
+                          )}
+                          {conversionReason && (
+                            <p role='status'>{t(conversionReason)}</p>
+                          )}
+                        </AlertDescription>
+                      </Alert>
+                    )}
+                    {(pricingMode === 'per-token' ||
+                      pricingMode === 'per-request' ||
+                      wasConverted) && (
+                      <p className='text-muted-foreground text-xs'>
+                        {t(
+                          'After conversion, expression reservation and rounding rules apply. Effective unit prices are preserved; individual rounded charges may differ.'
+                        )}
+                      </p>
+                    )}
 
-                      <div className='grid gap-3 sm:grid-cols-[repeat(auto-fit,minmax(400px,1fr))]'>
+                    <TabsContent
+                      value='per-token'
+                      className='@container/pricing-fields min-w-0 pt-0'
+                    >
+                      {taskUsageSchema &&
+                        Object.keys(taskUsageSchema).length > 0 && (
+                          <Alert className='mb-4'>
+                            <AlertDescription className='flex flex-col gap-3 text-xs'>
+                              <p>
+                                {t(
+                                  'This is a task model billed by usage (e.g. seconds, resolution). Prices entered here act as a per-call base rate, not per-token prices.'
+                                )}
+                              </p>
+                              <p>
+                                {t(
+                                  'Tip: after configuring one model, select others in the table and use bulk copy.'
+                                )}
+                              </p>
+                              <Button
+                                type='button'
+                                variant='outline'
+                                size='sm'
+                                className='w-fit'
+                                onClick={() => handleModeChange('tiered_expr')}
+                              >
+                                {t('Configure task pricing')}
+                              </Button>
+                            </AlertDescription>
+                          </Alert>
+                        )}
+                      <p className='text-muted-foreground mb-3 text-xs'>
+                        {embedded && (
+                          <>
+                            {t('{{currency}} price per 1M tokens.', {
+                              currency: currency.label,
+                            })}{' '}
+                          </>
+                        )}
+                        {t(
+                          'Unset legacy prices use the billing engine defaults.'
+                        )}
+                      </p>
+                      <div
+                        className={cn(
+                          'grid min-w-0 gap-3',
+                          embedded && '@min-[560px]/pricing-fields:grid-cols-2'
+                        )}
+                      >
+                        <Field
+                          className={cn(
+                            'min-w-0',
+                            embedded && 'rounded-lg border p-3'
+                          )}
+                        >
+                          <FieldLabel htmlFor={promptPriceId}>
+                            {t('Input price')}
+                          </FieldLabel>
+                          <FieldDescription
+                            id={`${promptPriceId}-description`}
+                            className={embedded ? 'text-xs' : undefined}
+                          >
+                            {t('{{currency}} price per 1M input tokens.', {
+                              currency: currency.label,
+                            })}
+                          </FieldDescription>
+                          <PriceInput
+                            currency={currency}
+                            id={promptPriceId}
+                            aria-describedby={`${promptPriceId}-description`}
+                            value={promptPrice}
+                            placeholder='3'
+                            onChange={handlePromptPriceChange}
+                          />
+                        </Field>
+
                         {laneConfigs.map((lane) => {
                           const disabled =
                             lane.key === 'audioOutput' &&
@@ -830,13 +1386,22 @@ export const ModelPricingEditorPanel = forwardRef<
                               !hasValue(lanePrices.audioInput))
                           return (
                             <PriceLane
+                              currency={currency}
                               key={lane.key}
+                              compact={embedded}
                               title={t(lane.titleKey)}
                               description={t(lane.descriptionKey)}
                               placeholder={lane.placeholder}
                               value={lanePrices[lane.key]}
                               enabled={laneEnabled[lane.key]}
                               disabled={disabled}
+                              disabledReason={
+                                disabled
+                                  ? t(
+                                      'Audio output price requires an audio input price.'
+                                    )
+                                  : undefined
+                              }
                               onEnabledChange={(checked) =>
                                 handleLaneToggle(lane.key, checked)
                               }
@@ -847,358 +1412,387 @@ export const ModelPricingEditorPanel = forwardRef<
                           )
                         })}
                       </div>
-                    </FieldGroup>
-                  </TabsContent>
+                    </TabsContent>
 
-                  <TabsContent value='per-request' className='pt-0'>
-                    <FieldGroup className='gap-5'>
-                      <FormField
-                        control={form.control}
-                        name='price'
-                        render={({ field }) => (
-                          <FormItem className='contents'>
-                            <Field>
-                              <FieldLabel>{t('Fixed price')}</FieldLabel>
-                              <FormControl>
-                                <InputGroup>
-                                  <InputGroupAddon>$</InputGroupAddon>
-                                  <InputGroupInput
-                                    inputMode='decimal'
-                                    placeholder='0.01'
-                                    {...field}
-                                    onChange={(event) => {
-                                      const value = event.target.value
-                                      if (numericDraftRegex.test(value)) {
-                                        field.onChange(value)
-                                      }
-                                    }}
-                                  />
+                    <TabsContent value='per-request' className='pt-0'>
+                      <FieldGroup className='gap-5'>
+                        <FormField
+                          control={form.control}
+                          name='price'
+                          render={({ field }) => (
+                            <FormItem className='contents'>
+                              <Field>
+                                <FormLabel>{t('Fixed price')}</FormLabel>
+                                <InputGroup className='has-[[data-pricing-error]]:h-auto has-[[data-pricing-error]]:flex-wrap'>
+                                  <InputGroupAddon>
+                                    {currency.symbol}
+                                  </InputGroupAddon>
+                                  <FormControl>
+                                    <PricingAmountInput
+                                      {...field}
+                                      value={field.value ?? ''}
+                                      currency={currency}
+                                      grouped
+                                      placeholder='0.01'
+                                      onChange={field.onChange}
+                                    />
+                                  </FormControl>
                                   <InputGroupAddon align='inline-end'>
                                     {t('per request')}
                                   </InputGroupAddon>
                                 </InputGroup>
-                              </FormControl>
-                              <FieldDescription>
-                                {t(
-                                  'Cost in USD per request, regardless of tokens used.'
-                                )}
-                              </FieldDescription>
-                              <FormMessage />
-                            </Field>
-                          </FormItem>
-                        )}
-                      />
+                                <FormDescription>
+                                  {t(
+                                    'Cost in {{currency}} per request, regardless of tokens used.',
+                                    { currency: currency.label }
+                                  )}
+                                </FormDescription>
+                                <FormMessage />
+                              </Field>
+                            </FormItem>
+                          )}
+                        />
+                      </FieldGroup>
+                    </TabsContent>
 
-                    </FieldGroup>
-                  </TabsContent>
-
-                  <TabsContent value='video_per_second' className='pt-0'>
-                    <FieldGroup className='gap-5'>
-                      <FormField
-                        control={form.control}
-                        name='videoPrice480p'
-                        render={({ field }) => (
-                          <FormItem className='contents'>
-                            <Field>
-                              <div className='flex items-center justify-between gap-3'>
-                                <FieldLabel>480p</FieldLabel>
-                                {renderVideoResolutionToggle('480p')}
-                              </div>
-                              <FormControl>
-                                <InputGroup>
-                                  <InputGroupAddon>$</InputGroupAddon>
-                                  <InputGroupInput
-                                    {...field}
-                                    inputMode='decimal'
-                                    value={
-                                      videoResolutionEnabled['480p']
-                                        ? field.value
-                                        : ''
-                                    }
-                                    placeholder={
-                                      videoResolutionEnabled['480p']
-                                        ? '0.03'
-                                        : t('Disabled')
-                                    }
-                                    disabled={!videoResolutionEnabled['480p']}
-                                    onChange={(event) => {
-                                      const value = event.target.value
-                                      if (numericDraftRegex.test(value)) {
-                                        field.onChange(value)
+                    <TabsContent value='video_per_second' className='pt-0'>
+                      <FieldGroup className='gap-5'>
+                        <FormField
+                          control={form.control}
+                          name='videoPrice480p'
+                          render={({ field }) => (
+                            <FormItem className='contents'>
+                              <Field>
+                                <div className='flex items-center justify-between gap-3'>
+                                  <FieldLabel>480p</FieldLabel>
+                                  {renderVideoResolutionToggle('480p')}
+                                </div>
+                                <FormControl>
+                                  <InputGroup>
+                                    <InputGroupAddon>
+                                      {currency.symbol}
+                                    </InputGroupAddon>
+                                    <PricingAmountInput
+                                      currency={currency}
+                                      grouped
+                                      {...field}
+                                      inputMode='decimal'
+                                      value={
+                                        videoResolutionEnabled['480p']
+                                          ? (field.value ?? '')
+                                          : ''
                                       }
-                                    }}
-                                  />
-                                  <InputGroupAddon align='inline-end'>
-                                    {t('每秒')}
-                                  </InputGroupAddon>
-                                </InputGroup>
-                              </FormControl>
-                              <FieldDescription>
-                                {videoResolutionEnabled['480p']
-                                  ? t('Video generation price 每秒.')
-                                  : t('Disabled')}
-                              </FieldDescription>
-                              <FormMessage />
-                            </Field>
-                          </FormItem>
-                        )}
-                      />
-
-                      <FormField
-                        control={form.control}
-                        name='videoPrice720p'
-                        render={({ field }) => (
-                          <FormItem className='contents'>
-                            <Field>
-                              <div className='flex items-center justify-between gap-3'>
-                                <FieldLabel>720p</FieldLabel>
-                                {renderVideoResolutionToggle('720p')}
-                              </div>
-                              <FormControl>
-                                <InputGroup>
-                                  <InputGroupAddon>$</InputGroupAddon>
-                                  <InputGroupInput
-                                    {...field}
-                                    inputMode='decimal'
-                                    value={
-                                      videoResolutionEnabled['720p']
-                                        ? field.value
-                                        : ''
-                                    }
-                                    placeholder={
-                                      videoResolutionEnabled['720p']
-                                        ? '0.05'
-                                        : t('Disabled')
-                                    }
-                                    disabled={!videoResolutionEnabled['720p']}
-                                    onChange={(event) => {
-                                      const value = event.target.value
-                                      if (numericDraftRegex.test(value)) {
-                                        field.onChange(value)
+                                      placeholder={
+                                        videoResolutionEnabled['480p']
+                                          ? '0.03'
+                                          : t('Disabled')
                                       }
-                                    }}
-                                  />
-                                  <InputGroupAddon align='inline-end'>
-                                    {t('每秒')}
-                                  </InputGroupAddon>
-                                </InputGroup>
-                              </FormControl>
-                              <FieldDescription>
-                                {videoResolutionEnabled['720p']
-                                  ? t('Video generation price 每秒.')
-                                  : t('Disabled')}
-                              </FieldDescription>
-                              <FormMessage />
-                            </Field>
-                          </FormItem>
-                        )}
-                      />
+                                      disabled={!videoResolutionEnabled['480p']}
+                                      onChange={field.onChange}
+                                    />
+                                    <InputGroupAddon align='inline-end'>
+                                      {t('每秒')}
+                                    </InputGroupAddon>
+                                  </InputGroup>
+                                </FormControl>
+                                <FieldDescription>
+                                  {videoResolutionEnabled['480p']
+                                    ? t('Video generation price 每秒.')
+                                    : t('Disabled')}
+                                </FieldDescription>
+                                <FormMessage />
+                              </Field>
+                            </FormItem>
+                          )}
+                        />
 
-                      <FormField
-                        control={form.control}
-                        name='videoPrice1080p'
-                        render={({ field }) => (
-                          <FormItem className='contents'>
-                            <Field>
-                              <div className='flex items-center justify-between gap-3'>
-                                <FieldLabel>1080p</FieldLabel>
-                                {renderVideoResolutionToggle('1080p')}
-                              </div>
-                              <FormControl>
-                                <InputGroup>
-                                  <InputGroupAddon>$</InputGroupAddon>
-                                  <InputGroupInput
-                                    {...field}
-                                    inputMode='decimal'
-                                    value={
-                                      videoResolutionEnabled['1080p']
-                                        ? field.value
-                                        : ''
-                                    }
-                                    placeholder={
-                                      videoResolutionEnabled['1080p']
-                                        ? '0.08'
-                                        : t('Disabled')
-                                    }
-                                    disabled={!videoResolutionEnabled['1080p']}
-                                    onChange={(event) => {
-                                      const value = event.target.value
-                                      if (numericDraftRegex.test(value)) {
-                                        field.onChange(value)
+                        <FormField
+                          control={form.control}
+                          name='videoPrice720p'
+                          render={({ field }) => (
+                            <FormItem className='contents'>
+                              <Field>
+                                <div className='flex items-center justify-between gap-3'>
+                                  <FieldLabel>720p</FieldLabel>
+                                  {renderVideoResolutionToggle('720p')}
+                                </div>
+                                <FormControl>
+                                  <InputGroup>
+                                    <InputGroupAddon>
+                                      {currency.symbol}
+                                    </InputGroupAddon>
+                                    <PricingAmountInput
+                                      currency={currency}
+                                      grouped
+                                      {...field}
+                                      inputMode='decimal'
+                                      value={
+                                        videoResolutionEnabled['720p']
+                                          ? (field.value ?? '')
+                                          : ''
                                       }
-                                    }}
-                                  />
-                                  <InputGroupAddon align='inline-end'>
-                                    {t('每秒')}
-                                  </InputGroupAddon>
-                                </InputGroup>
-                              </FormControl>
-                              <FieldDescription>
-                                {videoResolutionEnabled['1080p']
-                                  ? t('Video generation price 每秒.')
-                                  : t('Disabled')}
-                              </FieldDescription>
-                              <FormMessage />
-                            </Field>
-                          </FormItem>
-                        )}
-                      />
-                      <FormField
-                        control={form.control}
-                        name='videoPrice4k'
-                        render={({ field }) => (
-                          <FormItem className='contents'>
-                            <Field>
-                              <div className='flex items-center justify-between gap-3'>
-                                <FieldLabel>4K</FieldLabel>
-                                {renderVideoResolutionToggle('4k')}
-                              </div>
-                              <FormControl>
-                                <InputGroup>
-                                  <InputGroupAddon>$</InputGroupAddon>
-                                  <InputGroupInput
-                                    {...field}
-                                    inputMode='decimal'
-                                    value={
-                                      videoResolutionEnabled['4k']
-                                        ? field.value
-                                        : ''
-                                    }
-                                    placeholder={
-                                      videoResolutionEnabled['4k']
-                                        ? '0.00'
-                                        : t('Disabled')
-                                    }
-                                    disabled={!videoResolutionEnabled['4k']}
-                                    onChange={(event) => {
-                                      const value = event.target.value
-                                      if (numericDraftRegex.test(value)) {
-                                        field.onChange(value)
+                                      placeholder={
+                                        videoResolutionEnabled['720p']
+                                          ? '0.05'
+                                          : t('Disabled')
                                       }
-                                    }}
-                                  />
-                                  <InputGroupAddon align='inline-end'>
-                                    {t('每秒')}
-                                  </InputGroupAddon>
-                                </InputGroup>
-                              </FormControl>
-                              <FieldDescription>
-                                {videoResolutionEnabled['4k']
-                                  ? t('Video generation price 每秒.')
-                                  : t('Disabled')}
-                              </FieldDescription>
-                              <FormMessage />
-                            </Field>
-                          </FormItem>
-                        )}
-                      />
-                    </FieldGroup>
-                  </TabsContent>
+                                      disabled={!videoResolutionEnabled['720p']}
+                                      onChange={field.onChange}
+                                    />
+                                    <InputGroupAddon align='inline-end'>
+                                      {t('每秒')}
+                                    </InputGroupAddon>
+                                  </InputGroup>
+                                </FormControl>
+                                <FieldDescription>
+                                  {videoResolutionEnabled['720p']
+                                    ? t('Video generation price 每秒.')
+                                    : t('Disabled')}
+                                </FieldDescription>
+                                <FormMessage />
+                              </Field>
+                            </FormItem>
+                          )}
+                        />
 
-                  <TabsContent value='tiered_expr' className='pt-0'>
-                    <FieldGroup className='gap-5'>
-                      <TieredPricingEditor
-                        key={editorReloadToken}
-                        modelName={watchedValues.name}
-                        billingExpr={billingExpr}
-                        requestRuleExpr={requestRuleExpr}
-                        onBillingExprChange={setBillingExpr}
-                        onRequestRuleExprChange={setRequestRuleExpr}
-                      />
-                    </FieldGroup>
-                  </TabsContent>
-                  <TabsContent value='image_quality' className='pt-0'>
-                <div className='rounded-lg border p-3'>
-                  <div className='flex items-start justify-between gap-3'>
-                    <div className='space-y-1'>
-                      <div className='text-sm font-medium'>{t('生图品质定价')}</div>
-                      <p className='text-muted-foreground text-xs'>
-                        {t('开启后，该生图模型会按照请求中的 quality 和 size 匹配价格计费。')}
-                      </p>
-                    </div>
-                  </div>
+                        <FormField
+                          control={form.control}
+                          name='videoPrice1080p'
+                          render={({ field }) => (
+                            <FormItem className='contents'>
+                              <Field>
+                                <div className='flex items-center justify-between gap-3'>
+                                  <FieldLabel>1080p</FieldLabel>
+                                  {renderVideoResolutionToggle('1080p')}
+                                </div>
+                                <FormControl>
+                                  <InputGroup>
+                                    <InputGroupAddon>
+                                      {currency.symbol}
+                                    </InputGroupAddon>
+                                    <PricingAmountInput
+                                      currency={currency}
+                                      grouped
+                                      {...field}
+                                      inputMode='decimal'
+                                      value={
+                                        videoResolutionEnabled['1080p']
+                                          ? (field.value ?? '')
+                                          : ''
+                                      }
+                                      placeholder={
+                                        videoResolutionEnabled['1080p']
+                                          ? '0.08'
+                                          : t('Disabled')
+                                      }
+                                      disabled={
+                                        !videoResolutionEnabled['1080p']
+                                      }
+                                      onChange={field.onChange}
+                                    />
+                                    <InputGroupAddon align='inline-end'>
+                                      {t('每秒')}
+                                    </InputGroupAddon>
+                                  </InputGroup>
+                                </FormControl>
+                                <FieldDescription>
+                                  {videoResolutionEnabled['1080p']
+                                    ? t('Video generation price 每秒.')
+                                    : t('Disabled')}
+                                </FieldDescription>
+                                <FormMessage />
+                              </Field>
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={form.control}
+                          name='videoPrice4k'
+                          render={({ field }) => (
+                            <FormItem className='contents'>
+                              <Field>
+                                <div className='flex items-center justify-between gap-3'>
+                                  <FieldLabel>4K</FieldLabel>
+                                  {renderVideoResolutionToggle('4k')}
+                                </div>
+                                <FormControl>
+                                  <InputGroup>
+                                    <InputGroupAddon>
+                                      {currency.symbol}
+                                    </InputGroupAddon>
+                                    <PricingAmountInput
+                                      currency={currency}
+                                      grouped
+                                      {...field}
+                                      inputMode='decimal'
+                                      value={
+                                        videoResolutionEnabled['4k']
+                                          ? (field.value ?? '')
+                                          : ''
+                                      }
+                                      placeholder={
+                                        videoResolutionEnabled['4k']
+                                          ? '0.00'
+                                          : t('Disabled')
+                                      }
+                                      disabled={!videoResolutionEnabled['4k']}
+                                      onChange={field.onChange}
+                                    />
+                                    <InputGroupAddon align='inline-end'>
+                                      {t('每秒')}
+                                    </InputGroupAddon>
+                                  </InputGroup>
+                                </FormControl>
+                                <FieldDescription>
+                                  {videoResolutionEnabled['4k']
+                                    ? t('Video generation price 每秒.')
+                                    : t('Disabled')}
+                                </FieldDescription>
+                                <FormMessage />
+                              </Field>
+                            </FormItem>
+                          )}
+                        />
+                      </FieldGroup>
+                    </TabsContent>
 
-                    <div className='mt-4 space-y-4'>
-                      {IMAGE_QUALITY_LEVELS.map((quality) => (
-                        <div key={quality} className='space-y-2'>
-                          <div className='text-sm font-medium'>{quality}</div>
-                          <div className='grid grid-cols-3 gap-2'>
-                            {IMAGE_RESOLUTION_LEVELS.map((resolution) => (
-                              <div
-                                key={`${quality}-${resolution}`}
-                                className='space-y-1'
-                              >
-                                <FieldLabel className='text-xs uppercase'>
-                                  {resolution}
-                                </FieldLabel>
-                                <InputGroup>
-                                  <InputGroupAddon>$</InputGroupAddon>
-                                  <InputGroupInput
-                                    inputMode='decimal'
-                                    placeholder='0.00'
-                                    value={
-                                      imageQualityPriceDraft[quality][resolution]
-                                    }
-                                    onChange={(event) =>
-                                      handleImageQualityPriceChange(
-                                        quality,
-                                        resolution,
-                                        event.target.value
-                                      )
-                                    }
-                                  />
-                                </InputGroup>
-                              </div>
-                            ))}
+                    <TabsContent value='image_quality' className='pt-0'>
+                      <div className='rounded-lg border p-3'>
+                        <div className='flex items-start justify-between gap-3'>
+                          <div className='space-y-1'>
+                            <div className='text-sm font-medium'>
+                              {t('生图品质定价')}
+                            </div>
+                            <p className='text-muted-foreground text-xs'>
+                              {t(
+                                '开启后，该生图模型会按照请求中的 quality 和 size 匹配价格计费。'
+                              )}
+                            </p>
                           </div>
                         </div>
-                      ))}
-                      <p className='text-muted-foreground text-xs'>
-                        {t('最终费用 = 对应品质分辨率单价 × 图片数量 n。用户专属品质密价优先级高于这里的公开价格。')}
-                      </p>
-                    </div>
 
-                  <div className='mt-4 flex justify-end'>
-                    <Button
-                      type='button'
-                      variant='outline'
-                      onClick={saveImageQualityPricing}
-                      disabled={
-                        isSavingImageQualityPricing || !form.watch('name')
-                      }
-                    >
-                        {isSavingImageQualityPricing
-                          ? t('Saving...')
-                          : t('保存生图品质定价')}
-                    </Button>
-                  </div>
-                </div>
-                  </TabsContent>
-                </Tabs>
+                        <div className='mt-4 space-y-4'>
+                          {IMAGE_QUALITY_LEVELS.map((quality) => (
+                            <div key={quality} className='space-y-2'>
+                              <div className='text-sm font-medium'>
+                                {quality}
+                              </div>
+                              <div className='grid grid-cols-3 gap-2'>
+                                {IMAGE_RESOLUTION_LEVELS.map((resolution) => (
+                                  <div
+                                    key={`${quality}-${resolution}`}
+                                    className='space-y-1'
+                                  >
+                                    <FieldLabel className='text-xs uppercase'>
+                                      {resolution}
+                                    </FieldLabel>
+                                    <InputGroup>
+                                      <InputGroupAddon>
+                                        {currency.symbol}
+                                      </InputGroupAddon>
+                                      <PricingAmountInput
+                                        currency={currency}
+                                        grouped
+                                        inputMode='decimal'
+                                        aria-label={`${quality} ${resolution}`}
+                                        placeholder='0.00'
+                                        value={
+                                          imageQualityPriceDraft[quality][
+                                            resolution
+                                          ]
+                                        }
+                                        onChange={(value) =>
+                                          handleImageQualityPriceChange(
+                                            quality,
+                                            resolution,
+                                            value
+                                          )
+                                        }
+                                      />
+                                    </InputGroup>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                          <p className='text-muted-foreground text-xs'>
+                            {t(
+                              '最终费用 = 对应品质分辨率单价 × 图片数量 n。用户专属品质密价优先级高于这里的公开价格。'
+                            )}
+                          </p>
+                        </div>
+
+                        <div className='mt-4 flex justify-end'>
+                          <Button
+                            type='button'
+                            variant='outline'
+                            onClick={() => {
+                              if (onSave) void onSave()
+                              else void saveImageQualityPricing()
+                            }}
+                            disabled={
+                              isSavingImageQualityPricing ||
+                              isSaving ||
+                              !form.watch('name')
+                            }
+                          >
+                            {isSavingImageQualityPricing
+                              ? t('Saving...')
+                              : t('保存生图品质定价')}
+                          </Button>
+                        </div>
+                      </div>
+                    </TabsContent>
+                    <TabsContent value='tiered_expr' className='pt-0'>
+                      <FieldGroup className='gap-5'>
+                        {expressionEditor}
+                      </FieldGroup>
+                    </TabsContent>
+                  </Tabs>
+                </TaskPluginPricingEditor>
               </FieldGroup>
 
-              <aside className='bg-muted/20 sticky top-0 rounded-lg border'>
+              <aside
+                aria-label={t('Preview')}
+                className='bg-muted/20 min-w-0 rounded-lg border @min-[960px]/pricing-editor:sticky @min-[960px]/pricing-editor:top-0'
+              >
                 <div className='border-b px-3 py-2'>
-                  <div className='text-sm font-medium'>{t('Preview')}</div>
+                  <div className='text-sm font-medium'>
+                    {!usesTaskPricing && pluginVariants?.length ? (
+                      <>{t('Ordinary OpenAI')} · </>
+                    ) : null}
+                    {t('Preview')}
+                  </div>
                 </div>
                 <div className='divide-y'>
-                  {previewRows.map((row) => (
-                    <div key={row.key} className='grid gap-1 px-3 py-2.5'>
-                      <span className='text-muted-foreground text-xs'>
-                        {row.label}
-                      </span>
-                      <span
-                        className={cn(
-                          'min-w-0 text-sm',
-                          row.multiline
-                            ? 'font-mono text-xs leading-5 break-words whitespace-pre-wrap'
-                            : 'truncate'
-                        )}
-                      >
-                        {row.value}
-                      </span>
-                    </div>
-                  ))}
+                  {pricingMode === 'per-token' && !effectivePreview && (
+                    <p
+                      className='text-muted-foreground px-3 py-2 text-xs'
+                      role='status'
+                    >
+                      {pricePreview.isError
+                        ? t('Failed to load model pricing')
+                        : t('Loading...')}
+                    </p>
+                  )}
+                  {(pricingMode !== 'per-token' || effectivePreview) &&
+                    previewRows.map((row) => (
+                      <div key={row.key} className='grid gap-1 px-3 py-2.5'>
+                        <span className='text-muted-foreground text-xs'>
+                          {row.label}
+                        </span>
+                        <span
+                          className={cn(
+                            'min-w-0 text-sm',
+                            row.multiline
+                              ? 'font-mono text-xs leading-5 break-words whitespace-pre-wrap'
+                              : 'truncate'
+                          )}
+                        >
+                          {row.value}
+                        </span>
+                      </div>
+                    ))}
                 </div>
               </aside>
             </div>
@@ -1210,11 +1804,13 @@ export const ModelPricingEditorPanel = forwardRef<
                   <Button
                     type='button'
                     onClick={onSave}
-                    disabled={isSaving}
+                    disabled={isSaving || isSavingImageQualityPricing}
                     className='w-full sm:w-auto'
                   >
                     <Save data-icon='inline-start' />
-                    {isSaving ? t('Saving...') : t('Save model prices')}
+                    {isSaving || isSavingImageQualityPricing
+                      ? t('Saving...')
+                      : t('Save model prices')}
                   </Button>
                 )}
               </div>
@@ -1222,6 +1818,18 @@ export const ModelPricingEditorPanel = forwardRef<
           )}
         </form>
       </Form>
+      {conversionPreview && (
+        <PricingConversionDialog
+          preview={conversionPreview}
+          currency={currency}
+          onCancel={() => {
+            conversionGeneration.current += 1
+            setConversionPreview(null)
+            setConversionReason('')
+          }}
+          onConfirm={applyConversion}
+        />
+      )}
     </div>
   )
 })

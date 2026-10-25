@@ -8,15 +8,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/dto"
+	hostdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/helper"
-	"github.com/QuantumNous/new-api/types"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -85,7 +88,10 @@ func submitImageAsyncTask(c *gin.Context) {
 	}
 	tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
 	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
-	specific := common.GetContextKeyString(c, constant.ContextKeyTokenSpecificChannelId)
+	specific := ""
+	if pin, found, _ := service.GetChannelConstraints(c).ResolvedPin(); found && pin.Source == hostdto.PinSourceToken {
+		specific = strconv.Itoa(pin.ChannelId)
+	}
 	fingerprintMeta, _ := common.Marshal([]string{string(headerBytes), tokenGroup, userGroup, specific})
 	reader, err := storage.NewReader()
 	if err != nil {

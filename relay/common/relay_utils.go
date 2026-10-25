@@ -23,6 +23,24 @@ type HasImage interface {
 	HasImage() bool
 }
 
+// UsesLegacyOpenAIVideo identifies transports that preserve the custom Sora
+// receipt and duration/size pricing, including the two existing MiniMax aliases.
+func UsesLegacyOpenAIVideo(pluginKey string, models ...string) bool {
+	if pluginKey == "sora" {
+		return true
+	}
+	if pluginKey != "hailuo" {
+		return false
+	}
+	for _, modelName := range models {
+		switch strings.TrimSpace(modelName) {
+		case "Minimax-H3-768p-933-10s", "Minimax-H3-768p-933-15s":
+			return true
+		}
+	}
+	return false
+}
+
 func GetFullRequestURL(baseURL string, requestURL string, channelType int) string {
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
 
@@ -169,7 +187,7 @@ func validateMultipartTaskRequest(c *gin.Context, info *RelayInfo, action string
 		Mode:     formData.Get("mode"),
 		Image:    formData.Get("image"),
 		Size:     formData.Get("size"),
-		Metadata: make(map[string]interface{}),
+		Metadata: make(map[string]any),
 	}
 
 	if durationStr := formData.Get("seconds"); durationStr != "" {
@@ -238,9 +256,9 @@ func ValidateMultipartDirect(c *gin.Context, info *RelayInfo) *dto.TaskError {
 		return taskErr
 	}
 
-	action := constant.TaskActionTextGenerate
+	action := constant.TaskActionTextToVideo
 	if hasInputReference {
-		action = constant.TaskActionGenerate
+		action = constant.TaskActionImageToVideo
 	}
 	if strings.HasPrefix(model, "sora-2") {
 

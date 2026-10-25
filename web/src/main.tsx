@@ -16,24 +16,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import {
-  QueryCache,
-  QueryClient,
-  QueryClientProvider,
-} from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
-import { AxiosError } from 'axios'
-import i18next from 'i18next'
 import { StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
-import { toast } from 'sonner'
 
-import { getStatus } from '@/lib/api'
 import { installBuildMetadata } from '@/lib/build-metadata'
 import { applyFaviconToDom } from '@/lib/dom-utils'
 import '@/lib/dayjs'
 import { initializeFrontendCache } from '@/lib/frontend-cache'
-import { handleServerError } from '@/lib/handle-server-error'
+import { createAppQueryClient } from '@/lib/query-client'
+import { readCachedStatus, statusQueryOptions } from '@/lib/status-query'
 
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
@@ -50,56 +43,7 @@ import './styles/index.css'
 initializeFrontendCache()
 installBuildMetadata()
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: (failureCount, error) => {
-        // eslint-disable-next-line no-console
-        if (import.meta.env.DEV) console.log({ failureCount, error })
-
-        if (failureCount >= 0 && import.meta.env.DEV) return false
-        if (failureCount > 3 && import.meta.env.PROD) return false
-
-        return !(
-          error instanceof AxiosError &&
-          [401, 403].includes(error.response?.status ?? 0)
-        )
-      },
-      // Keep focused tabs from silently re-running heavy pages like logs.
-      refetchOnWindowFocus: false,
-      // Route transitions in the SPA remount page queries without reloading the
-      // browser. Always revalidate on mount so returning to any module cannot
-      // keep showing a still-fresh but outdated cache entry after a mutation.
-      // React Query keeps the cached value visible while the request runs, so
-      // this does not introduce an empty loading flash.
-      refetchOnMount: 'always',
-      staleTime: 10 * 1000, // 10s
-    },
-    mutations: {
-      onError: (error) => {
-        handleServerError(error)
-
-        if (error instanceof AxiosError) {
-          if (error.response?.status === 304) {
-            toast.error(i18next.t('Content not modified!'))
-          }
-        }
-      },
-    },
-  },
-  queryCache: new QueryCache({
-    onError: (error) => {
-      if (error instanceof AxiosError) {
-        if (error.response?.status === 500) {
-          toast.error(i18next.t('Internal Server Error!'))
-          // A background query can fail transiently while the rest of the
-          // current page is still usable. Keep the page and its cached data
-          // visible instead of replacing the whole console with /500.
-        }
-      }
-    },
-  }),
-})
+const queryClient = createAppQueryClient()
 
 // Create a new router instance
 const router = createRouter({
@@ -133,27 +77,18 @@ if (!rootElement) {
       if (metaTitle) metaTitle.setAttribute('content', name)
     }
     // Cache-first
-    try {
-      const saved = localStorage.getItem('status')
-      if (saved) {
-        const s = JSON.parse(saved)
-        if (s?.system_name) apply(s.system_name)
-        if (s?.logo) applyFaviconToDom(s.logo)
-      }
-    } catch {
-      /* empty */
-    }
-    // Background refresh
-    getStatus()
+    const cached = readCachedStatus()
+    if (cached?.system_name) apply(cached.system_name as string)
+    if (cached?.logo) applyFaviconToDom(cached.logo as string)
+
+    // Background refresh through the shared cache. This primes ['status']
+    // before React mounts, so the root guard and every status consumer reuse
+    // this one request instead of firing their own. `fetchStatus` owns the
+    // localStorage write and the system-config store sync.
+    queryClient
+      .ensureQueryData(statusQueryOptions)
       .then((s) => {
-        if (s?.system_name) {
-          apply(s.system_name as string)
-          try {
-            localStorage.setItem('status', JSON.stringify(s))
-          } catch {
-            /* empty */
-          }
-        }
+        if (s?.system_name) apply(s.system_name as string)
         if (s?.logo) applyFaviconToDom(s.logo as string)
       })
       .catch(() => {

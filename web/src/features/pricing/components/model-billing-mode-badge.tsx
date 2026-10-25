@@ -19,30 +19,28 @@ For commercial licensing, please contact support@quantumnous.com
 import { useTranslation } from 'react-i18next'
 
 import { StatusBadge, type StatusVariant } from '@/components/status-badge'
+import { cn } from '@/lib/utils'
 
+import { getBillingModeLabelKey } from '../lib/billing-mode'
 import { isDynamicPricingModel } from '../lib/dynamic-price'
-import { isVideoPerSecondModel } from '../lib/price'
-import { isTokenBasedModel } from '../lib/model-helpers'
 import type { PricingModel } from '../types'
 
 interface ModelBillingModeBadgeProps {
   model: PricingModel
+  appearance?: 'default' | 'caption'
   className?: string
 }
 
 export function ModelBillingModeBadge(props: ModelBillingModeBadgeProps) {
   const { t } = useTranslation()
-  let label = t('Per Request')
+  const labelKey = getBillingModeLabelKey(props.model)
+  const label = t(labelKey)
+  const isCaption = props.appearance === 'caption'
   let variant: StatusVariant = 'purple'
 
-  if (isVideoPerSecondModel(props.model)) {
-    label = t('按秒')
+  if (isDynamicPricingModel(props.model)) {
     variant = 'warning'
-  } else if (isDynamicPricingModel(props.model)) {
-    label = t('Dynamic Pricing')
-    variant = 'warning'
-  } else if (isTokenBasedModel(props.model)) {
-    label = t('Token-based')
+  } else if (labelKey === 'Token-based') {
     variant = 'info'
   }
 
@@ -50,9 +48,10 @@ export function ModelBillingModeBadge(props: ModelBillingModeBadgeProps) {
     <StatusBadge
       label={label}
       variant={variant}
+      type={isCaption ? 'text' : undefined}
       copyable={false}
       size='sm'
-      className={props.className}
+      className={cn(isCaption && 'text-xs font-normal', props.className)}
     />
   )
 }

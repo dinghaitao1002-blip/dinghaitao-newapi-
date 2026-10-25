@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,7 +106,7 @@ func requireQuotaChannelState(t *testing.T, channelID, status int, abilitiesEnab
 
 func requireQuotaSelection(t *testing.T, group, model string, retry, wantID int) {
 	t.Helper()
-	selected, err := GetRandomSatisfiedChannel(group, model, retry, "/v1/images/generations")
+	selected, err := GetRandomSatisfiedChannel(group, model, retry, []dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: "/v1/images/generations"}})
 	require.NoError(t, err)
 	require.NotNil(t, selected)
 	require.Equal(t, wantID, selected.Id)
@@ -136,12 +137,12 @@ func TestStopChannelForQuotaExhaustionRoutesNewRequestsAndRetries(t *testing.T) 
 			for _, retry := range []int{0, 1, 3} {
 				requireQuotaSelection(t, "quota-shared", modelName, retry, 97)
 			}
-			selected, err := GetRandomSatisfiedChannel("quota-exclusive", modelName, 0, "/v1/images/generations")
+			selected, err := GetRandomSatisfiedChannel("quota-exclusive", modelName, 0, []dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: "/v1/images/generations"}})
 			require.NoError(t, err)
 			require.Nil(t, selected, "must not borrow 97 or 98 from another group")
-			selected, _ = GetRandomSatisfiedChannel("quota-exclusive", modelName, 1, "/v1/images/generations")
+			selected, _ = GetRandomSatisfiedChannel("quota-exclusive", modelName, 1, []dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: "/v1/images/generations"}})
 			require.Nil(t, selected, "retry must not escape the original group")
-			selected, err = GetRandomSatisfiedChannel("quota-shared", "quota-second-model", 0, "/v1/images/generations")
+			selected, err = GetRandomSatisfiedChannel("quota-shared", "quota-second-model", 0, []dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: "/v1/images/generations"}})
 			require.NoError(t, err)
 			require.Nil(t, selected, "a backup without the requested model must not be selected")
 		})

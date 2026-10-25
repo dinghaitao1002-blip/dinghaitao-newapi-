@@ -17,8 +17,8 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -336,8 +336,8 @@ func (r *imageAsyncRunner) recoverAndClean() {
 	}
 	for _, task := range tasks {
 		info, fileErr := os.Stat(filepath.Join(imageTaskDir(r.root, task.ID), "result.json"))
-		success := task.BillingState == model.ImageAsyncBillingSettled && fileErr == nil && info.Mode().IsRegular() && info.Size() > 0
-		if _, err := model.RecoverExpiredImageAsyncTask(task.ID, r.node, success, "image_task_interrupted", "Task execution was interrupted; no automatic regeneration was attempted"); err != nil {
+		hasResult := fileErr == nil && info.Mode().IsRegular() && info.Size() > 0
+		if _, err := model.RecoverExpiredImageAsyncTask(task.ID, r.node, hasResult, "image_task_interrupted", "Task execution was interrupted; no automatic regeneration was attempted"); err != nil {
 			common.SysError("image async recovery pending for " + task.ID + ": " + err.Error())
 		}
 	}

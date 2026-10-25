@@ -1,5 +1,33 @@
 # 异步图片接口
 
+## 官方新版与现有图片异步的关系
+
+本版本基于官方 `v1.0.0-rc.47`，同时保留本站原有的图片异步扩展。两套接口使用不同任务 ID，不能混用查询地址：
+
+| 用途 | 提交 | 返回 | 查询 |
+| --- | --- | --- | --- |
+| 现有 GPT 等普通图片渠道 | `/v1/images/generations` 或 `/v1/images/edits`，添加 `Prefer: respond-async` | HTTP 202，`imgtask_...` | `/v1/images/tasks/{id}`，成功后 `/result` |
+| 官方任务插件渠道 | `/v1/tasks/{pluginKey}` | HTTP 200，`task_...` | `/v1/tasks/{id}`，成功后 `/artifacts` |
+
+官方任务插件必须已启用，渠道、模型、令牌分组也须配置匹配。模型不会因为升级而自动转换为任务插件。官方图片协议桥接本身仍会等待生成结果；普通图片渠道继续使用下文的 202 异步扩展，原有同步客户端不需修改。
+
+官方任务提交示例（`PLUGIN_KEY` 和 `MODEL` 替换为实际配置）：
+
+```bash
+curl "https://nicolessss.com/v1/tasks/$PLUGIN_KEY" \
+  -H "Authorization: Bearer $NEWAPI_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"MODEL","prompt":"一只坐在窗边的橘猫"}'
+```
+
+提交后取响应中的 `task_id`，查询 `GET /v1/tasks/{task_id}`。查询状态为 `NOT_START`、`SUBMITTED`、`QUEUED`、`IN_PROGRESS`、`SUCCESS`、`FAILURE` 或 `UNKNOWN`。成功后查询 `GET /v1/tasks/{task_id}/artifacts`，按返回的产物键下载 `GET /v1/tasks/{task_id}/artifacts/{artifact_key}/content`。所有请求携带原 API 令牌。各插件的附加参数由对应插件规定。
+
+上文官方任务提交成功的 HTTP 200 和下文图片扩展的 HTTP 202 都只表示任务已受理，不等于图片生成成功。不要把下文 `Idempotency-Key` 的保证套用到官方通用任务接口。
+
+官方实现参考：[任务插件 API v1](https://github.com/QuantumNous/new-api/blob/v1.0.0-rc.47/docs/plugin-api/v1.md)。
+
+## 本站图片异步扩展
+
 支持 `POST /v1/images/generations`、`POST /v1/images/edits`（包括 multipart 上传）。原接口默认仍同步返回；异步请求添加 `Prefer: respond-async`，或使用 `?async=true`。不要把 `async` 放进 JSON / multipart 表单，也不要同时启用 `stream=true`。
 
 ## 提交

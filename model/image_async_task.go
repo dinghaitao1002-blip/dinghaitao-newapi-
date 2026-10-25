@@ -347,9 +347,10 @@ func ListImageAsyncRefundPending(node string, limit int) ([]*ImageAsyncTask, err
 	return tasks, err
 }
 
-// RecoverExpiredImageAsyncTask never retries generation. A completed artifact
-// may only be recovered as success after its durable billing has settled.
-func RecoverExpiredImageAsyncTask(id, node string, success bool, code, msg string) (bool, error) {
+// RecoverExpiredImageAsyncTask never retries generation. hasResult reports the
+// durable file check; the locked row determines whether billing has settled.
+// A caller's earlier queue snapshot must not decide a paid task's final state.
+func RecoverExpiredImageAsyncTask(id, node string, hasResult bool, code, msg string) (bool, error) {
 	changed := false
 	var userID int
 	var tokenKey string
@@ -362,10 +363,8 @@ func RecoverExpiredImageAsyncTask(id, node string, success bool, code, msg strin
 			return nil
 		}
 		status, httpStatus := ImageAsyncStatusFailed, 503
+		success := hasResult && task.BillingState == ImageAsyncBillingSettled
 		if success {
-			if task.BillingState != ImageAsyncBillingSettled {
-				return ErrImageAsyncBillingFinalized
-			}
 			status, httpStatus, code, msg = ImageAsyncStatusSucceeded, 200, "", ""
 		}
 		task.Status = status

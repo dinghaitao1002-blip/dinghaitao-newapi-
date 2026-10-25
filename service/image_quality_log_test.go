@@ -3,8 +3,10 @@ package service
 import (
 	"testing"
 
-	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
+
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/stretchr/testify/require"
 )
@@ -40,14 +42,14 @@ func TestAppendImageQualityPricingInfo(t *testing.T) {
 			}
 			info.PriceData.AddOtherRatio("n", 2)
 
-			other := map[string]interface{}{}
+			other := model.NewLogOther()
 			appendImageQualityPricingInfo(info, other)
 
-			require.Equal(t, tc.source, other["price_source"])
-			require.Equal(t, "high", other["quality"])
-			require.Equal(t, "2k", other["resolution"])
-			require.Equal(t, float64(3), other["unit_price"])
-			require.Equal(t, float64(2), other["image_count"])
+			require.Equal(t, tc.source, other.Snapshot()["price_source"])
+			require.Equal(t, "high", other.Snapshot()["quality"])
+			require.Equal(t, "2k", other.Snapshot()["resolution"])
+			require.Equal(t, float64(3), other.Snapshot()["unit_price"])
+			require.Equal(t, float64(2), other.Snapshot()["image_count"])
 		})
 	}
 }
@@ -62,10 +64,10 @@ func TestAppendImageQualityPricingInfoUsesRequestCountFallback(t *testing.T) {
 		ImageQualityUnitPrice:   1.25,
 	}
 
-	other := map[string]interface{}{}
+	other := model.NewLogOther()
 	appendImageQualityPricingInfo(info, other)
 
-	require.Equal(t, float64(3), other["image_count"])
+	require.Equal(t, float64(3), other.Snapshot()["image_count"])
 }
 
 func TestAppendImageQualityPricingInfoDefaultsImageCountToOne(t *testing.T) {
@@ -76,19 +78,19 @@ func TestAppendImageQualityPricingInfoDefaultsImageCountToOne(t *testing.T) {
 		ImageQualityUnitPrice:   0.5,
 	}
 
-	other := map[string]interface{}{}
+	other := model.NewLogOther()
 	appendImageQualityPricingInfo(info, other)
 
-	require.Equal(t, float64(1), other["image_count"])
+	require.Equal(t, float64(1), other.Snapshot()["image_count"])
 }
 
 func TestAppendImageQualityPricingInfoOmitsNormalRequest(t *testing.T) {
-	other := map[string]interface{}{}
+	other := model.NewLogOther()
 	appendImageQualityPricingInfo(&relaycommon.RelayInfo{}, other)
 
-	require.NotContains(t, other, "price_source")
-	require.NotContains(t, other, "quality")
-	require.NotContains(t, other, "resolution")
-	require.NotContains(t, other, "unit_price")
-	require.NotContains(t, other, "image_count")
+	require.NotContains(t, other.Snapshot(), "price_source")
+	require.NotContains(t, other.Snapshot(), "quality")
+	require.NotContains(t, other.Snapshot(), "resolution")
+	require.NotContains(t, other.Snapshot(), "unit_price")
+	require.NotContains(t, other.Snapshot(), "image_count")
 }

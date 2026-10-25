@@ -1,3 +1,21 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Plus } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
@@ -8,7 +26,8 @@ import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { cn } from '@/lib/utils'
+import { handleServerError } from '@/lib/handle-server-error'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { createChannelCategory, getChannelCategories } from '../api'
 
@@ -55,19 +74,14 @@ export function ChannelCategoryBar({
     setSubmitting(true)
     try {
       const response = await createChannelCategory(trimmed)
-      if (!response.success) {
-        toast.error(response.message || t('Failed to create category'))
-        return
-      }
+      requireServerSuccess(response)
       await queryClient.invalidateQueries({ queryKey: ['channel-categories'] })
       toast.success(t('Channel category created'))
       setCreateOpen(false)
       setName('')
       onSelect(trimmed)
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : t('Failed to create category')
-      )
+      handleServerError(error, t('Failed to create category'))
     } finally {
       submitLock.current = false
       setSubmitting(false)
@@ -84,7 +98,8 @@ export function ChannelCategoryBar({
       type='button'
       size='sm'
       variant={selectedCategory === value ? 'default' : 'outline'}
-      className={cn('h-8 shrink-0 gap-1.5 rounded-full px-3')}
+      className='h-8 shrink-0 gap-1.5 rounded-full px-3'
+      aria-pressed={selectedCategory === value}
       onClick={() => onSelect(value)}
     >
       <span>{label}</span>
@@ -94,7 +109,7 @@ export function ChannelCategoryBar({
 
   return (
     <>
-      <div className='flex max-w-[min(46vw,42rem)] items-center gap-1.5 overflow-x-auto py-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'>
+      <div className='flex max-w-[min(46vw,42rem)] [scrollbar-width:none] items-center gap-1.5 overflow-x-auto py-0.5 [&::-webkit-scrollbar]:hidden'>
         {renderCategoryButton('all', t('All'), allCount)}
         {categories.map((category) =>
           renderCategoryButton(
@@ -123,7 +138,9 @@ export function ChannelCategoryBar({
 
       <Dialog
         open={createOpen}
-        onOpenChange={setCreateOpen}
+        onOpenChange={(open) => {
+          if (!submitting) setCreateOpen(open)
+        }}
         title={t('Create Channel Category')}
         description={t(
           'Create a category first, then assign channels to it directly from the channel list.'
@@ -131,10 +148,18 @@ export function ChannelCategoryBar({
         contentClassName='sm:max-w-md'
         footer={
           <>
-            <Button variant='outline' onClick={() => setCreateOpen(false)}>
+            <Button
+              type='button'
+              variant='outline'
+              onClick={() => setCreateOpen(false)}
+            >
               {t('Cancel')}
             </Button>
-            <Button onClick={handleCreate} disabled={!name.trim() || submitting}>
+            <Button
+              type='button'
+              onClick={handleCreate}
+              disabled={!name.trim() || submitting}
+            >
               {submitting && <Loader2 className='mr-2 size-4 animate-spin' />}
               {t('Create')}
             </Button>

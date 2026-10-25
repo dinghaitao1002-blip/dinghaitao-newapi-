@@ -25,7 +25,7 @@ func TestImageAsyncQuotaAdmissionIgnoresStaleRedisBalances(t *testing.T) {
 			require.NoError(t, populateUserCache(cachedUser))
 			cachedToken := token
 			cachedToken.RemainQuota = cachedQuota
-			require.NoError(t, cacheSetToken(cachedToken))
+			require.NoError(t, cacheSetTokenForTest(cachedToken))
 			before, err := GetTokenByKey(token.Key, false)
 			require.NoError(t, err)
 			assert.Equal(t, cachedQuota, before.RemainQuota)

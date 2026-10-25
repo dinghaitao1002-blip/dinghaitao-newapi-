@@ -20,9 +20,9 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -187,6 +187,75 @@ func TestImageAsyncOptInKeepsSynchronousValidation(t *testing.T) {
 			assert.Contains(t, w.Body.String(), test.code)
 		})
 	}
+}
+
+func TestImageAsyncRecoveryUsesLockedBillingStateAfterStaleScan(t *testing.T) {
+	db, runner := setupImageAsyncControllerFixture(t)
+	user := model.User{Username: "recovery-owner", Status: common.UserStatusEnabled, Quota: 1000}
+	require.NoError(t, db.Create(&user).Error)
+	token := model.Token{UserId: user.Id, Key: "recovery-token", Status: common.TokenStatusEnabled, ExpiredTime: -1, RemainQuota: 1000}
+	require.NoError(t, db.Create(&token).Error)
+	tasks := make([]*model.ImageAsyncTask, 0, 2)
+	for _, settled := range []bool{true, false} {
+		id, err := model.GenerateImageAsyncTaskID()
+		require.NoError(t, err)
+		_, created, err := model.CreateImageAsyncTask(&model.ImageAsyncTask{ID: id, UserID: user.Id, TokenID: token.Id,
+			StorageNode: runner.node, Fingerprint: strings.Repeat("a", 64), Operation: "/v1/images/generations",
+			ExpiresAt: time.Now().Unix() + 3600}, 10, 5)
+		require.NoError(t, err)
+		require.True(t, created)
+		task, err := model.ClaimImageAsyncTask(runner.node, "owner-"+id, 90)
+		require.NoError(t, err)
+		require.NotNil(t, task)
+		_, err = model.ReserveImageAsyncQuota(task.ID, task.Owner, 100, "wallet_only")
+		require.NoError(t, err)
+		if settled {
+			_, err = model.SettleImageAsyncQuota(task.ID, task.Owner, 70)
+			require.NoError(t, err)
+		}
+		dir := imageTaskDir(runner.root, task.ID)
+		require.NoError(t, os.Mkdir(dir, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "result.json"), []byte(`{"data":[{"b64_json":"image"}]}`), 0600))
+		require.NoError(t, db.Model(task).UpdateColumn("lease_until", time.Now().Unix()-1).Error)
+		tasks = append(tasks, task)
+	}
+	// Simulate the scan seeing the old reserved value while a settlement has
+	// committed by the time recovery locks the row. Only the query result is
+	// made stale; the authoritative ledger remains settled.
+	staleScan := false
+	const callback = "test:stale-image-async-scan"
+	require.NoError(t, db.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
+		if rows, ok := tx.Statement.Dest.(*[]*model.ImageAsyncTask); ok {
+			for _, task := range *rows {
+				if task.ID == tasks[0].ID && task.BillingState == model.ImageAsyncBillingSettled {
+					task.BillingState = model.ImageAsyncBillingReserved
+					staleScan = true
+				}
+			}
+		}
+	}))
+	t.Cleanup(func() { require.NoError(t, db.Callback().Query().Remove(callback)) })
+	runner.recoverAndClean()
+	require.True(t, staleScan)
+	paid, err := model.GetImageAsyncTask(tasks[0].ID, user.Id, token.Id)
+	require.NoError(t, err)
+	assert.Equal(t, model.ImageAsyncStatusSucceeded, paid.Status)
+	assert.Equal(t, model.ImageAsyncBillingSettled, paid.BillingState)
+	assert.Equal(t, 70, paid.ActualQuota)
+	unpaid, err := model.GetImageAsyncTask(tasks[1].ID, user.Id, token.Id)
+	require.NoError(t, err)
+	assert.Equal(t, model.ImageAsyncStatusFailed, unpaid.Status)
+	assert.Equal(t, model.ImageAsyncBillingRefunded, unpaid.BillingState, "an artifact alone must not finalize an unpaid job")
+	var updatedUser model.User
+	var updatedToken model.Token
+	require.NoError(t, db.First(&updatedUser, user.Id).Error)
+	require.NoError(t, db.First(&updatedToken, token.Id).Error)
+	assert.Equal(t, 930, updatedUser.Quota)
+	assert.Equal(t, 930, updatedToken.RemainQuota)
+	assert.Equal(t, 70, updatedToken.UsedQuota)
+	next, err := model.ClaimImageAsyncTask(runner.node, "another-worker", 90)
+	require.NoError(t, err)
+	assert.Nil(t, next, "recovery must never requeue generation")
 }
 
 func TestImageAsyncRetryRequiresAnUnambiguousUnwrittenFailure(t *testing.T) {

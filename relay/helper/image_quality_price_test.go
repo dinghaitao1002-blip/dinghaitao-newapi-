@@ -6,16 +6,102 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestImageQualityPricingPrecedesOnlyBuiltinTieredDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldDB := model.DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	pool, err := db.DB()
+	require.NoError(t, err)
+	pool.SetMaxOpenConns(1)
+	model.DB = db
+	t.Cleanup(func() {
+		model.DB = oldDB
+		_ = pool.Close()
+	})
+	require.NoError(t, db.AutoMigrate(&model.UserModelPrice{}, &model.ModelImageQualityPrice{}, &model.UserModelImageQualityPrice{}))
+	settings := config.GlobalConfig.Get("billing_setting").(*billing_setting.BillingSetting)
+	savedSettings := *settings
+	savedRatios, savedPrices := ratio_setting.ModelRatio2JSONString(), ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() {
+		*settings = savedSettings
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedRatios))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
+	})
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{}`))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
+	const modelName = "gpt-image-2"
+	const userID = 4242
+	const explicitExpression = `tier("explicit", fixed(0.7))`
+	for _, tc := range []struct {
+		name, mode, source string
+		public, private    bool
+		wantPrice          float64
+		wantTiered         bool
+	}{
+		{name: "public quality overrides builtin", public: true, source: "model_image_quality_public", wantPrice: 0.2},
+		{name: "private quality overrides public and builtin", public: true, private: true, source: "user_image_quality_private", wantPrice: 0.1},
+		{name: "explicit ratio retains quality price", mode: billing_setting.BillingModeRatio, public: true, source: "model_image_quality_public", wantPrice: 0.2},
+		{name: "explicit quality retains private price", mode: billing_setting.BillingModeImageQuality, public: true, private: true, source: "user_image_quality_private", wantPrice: 0.1},
+		{name: "explicit tiered still precedes public quality", mode: billing_setting.BillingModeTieredExpr, public: true, wantTiered: true},
+		{name: "explicit tiered still precedes private quality", mode: billing_setting.BillingModeTieredExpr, public: true, private: true, wantTiered: true},
+		{name: "builtin remains fallback without quality price", wantTiered: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, db.Where("1 = 1").Delete(&model.ModelImageQualityPrice{}).Error)
+			require.NoError(t, db.Where("1 = 1").Delete(&model.UserModelImageQualityPrice{}).Error)
+			*settings = billing_setting.BillingSetting{BillingMode: map[string]string{}, BillingExpr: map[string]string{}}
+			if tc.mode != "" {
+				settings.BillingMode[modelName] = tc.mode
+			}
+			if tc.mode == billing_setting.BillingModeTieredExpr {
+				settings.BillingExpr[modelName] = explicitExpression
+			}
+			if tc.public {
+				require.NoError(t, model.SaveModelImageQualityPrices(modelName, fullImageQualityPriceMatrix(0.2), true))
+			}
+			if tc.private {
+				require.NoError(t, model.SaveUserModelImageQualityPrices(userID, modelName, fullImageQualityPriceMatrix(0.1), true))
+			}
+			ctx, info, meta := newImageQualityPriceTestContext(modelName, userID, "high", "2048x2048", 2)
+			priceData, err := ModelPriceHelper(ctx, info, 1000, meta)
+			require.NoError(t, err)
+			if tc.wantTiered {
+				require.NotNil(t, info.TieredBillingSnapshot)
+				require.False(t, priceData.UsePrice)
+				if tc.mode == billing_setting.BillingModeTieredExpr {
+					require.Equal(t, explicitExpression, info.TieredBillingSnapshot.ExprString)
+					expected, err := common.QuotaRoundStrict(0.7 * common.QuotaPerUnit * priceData.GroupRatioInfo.GroupRatio)
+					require.NoError(t, err)
+					require.Equal(t, expected, priceData.QuotaToPreConsume)
+				}
+				return
+			}
+			require.Nil(t, info.TieredBillingSnapshot)
+			require.True(t, priceData.UsePrice)
+			require.Equal(t, tc.wantPrice, priceData.ModelPrice)
+			require.Equal(t, tc.source, info.ImageQualityPriceSource)
+			require.Zero(t, meta.ImagePriceRatio)
+			require.Equal(t, float64(2), priceData.OtherRatioMultiplier())
+			expected, err := common.QuotaFromFloatStrict(tc.wantPrice * common.QuotaPerUnit * priceData.GroupRatioInfo.GroupRatio * 2)
+			require.NoError(t, err)
+			require.Equal(t, expected, priceData.QuotaToPreConsume)
+		})
+	}
+}
 
 func fullImageQualityPriceMatrix(base float64) []model.ImageQualityPriceItem {
 	qualities := []string{"low", "medium", "high"}

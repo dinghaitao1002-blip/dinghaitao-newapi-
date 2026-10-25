@@ -16,12 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Check, Copy } from 'lucide-react'
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { CopyButton } from '@/components/copy-button'
 import { SectionPageLayout } from '@/components/layout'
-import { Button } from '@/components/ui/button'
 
 import { ApiKeysDialogs } from './components/api-keys-dialogs'
 import { ApiKeysPrimaryButtons } from './components/api-keys-primary-buttons'
@@ -30,14 +28,7 @@ import { ApiKeysTable } from './components/api-keys-table'
 
 export function ApiKeys() {
   const { t } = useTranslation()
-  const [copied, setCopied] = useState(false)
   const apiEndpoint = 'https://nicolessss.com'
-
-  const copyEndpoint = async () => {
-    await navigator.clipboard.writeText(apiEndpoint)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1500)
-  }
 
   return (
     <ApiKeysProvider>
@@ -54,10 +45,9 @@ export function ApiKeys() {
                 {apiEndpoint}
               </code>
             </div>
-            <Button variant='outline' size='sm' onClick={copyEndpoint}>
-              {copied ? <Check className='mr-1 h-4 w-4' /> : <Copy className='mr-1 h-4 w-4' />}
-              {copied ? t('Copied') : t('Copy')}
-            </Button>
+            <CopyButton value={apiEndpoint} variant='outline' size='sm'>
+              {t('Copy')}
+            </CopyButton>
           </div>
           <ApiKeysTable />
         </SectionPageLayout.Content>

@@ -10,7 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/types"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -85,6 +85,11 @@ func (s *ImageAsyncBillingSession) Reserve(targetQuota int) error {
 	}
 	s.applyMetadata(metadata)
 	return nil
+}
+
+// ReserveBeforeSubmit uses the same atomic availability checks as the task ledger.
+func (s *ImageAsyncBillingSession) ReserveBeforeSubmit(targetQuota int) error {
+	return s.Reserve(targetQuota)
 }
 
 func (s *ImageAsyncBillingSession) Settle(actualQuota int) error {

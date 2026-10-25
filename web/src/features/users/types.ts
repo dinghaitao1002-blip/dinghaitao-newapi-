@@ -118,7 +118,6 @@ export interface SearchUsersParams {
   sort_order?: UserSortOrder
 }
 
-
 export interface UserModelPrice {
   id: number
   user_id: number

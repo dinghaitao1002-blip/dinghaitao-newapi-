@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
 import { Pencil, Trash2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -31,8 +31,9 @@ import {
   sideDrawerFormClassName,
   sideDrawerHeaderClassName,
 } from '@/components/drawer-layout'
+import { PermissionMatrix } from '@/components/permission-matrix'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
+import { Combobox } from '@/components/ui/combobox'
 import {
   Form,
   FormControl,
@@ -68,10 +69,15 @@ import {
   EMPTY_PERMISSION_CATALOG,
   hasPermission,
   normalizeAdminPermissions,
+  type AdminPermissionMatrix,
 } from '@/lib/admin-permissions'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { formatQuota, parseQuotaFromDollars } from '@/lib/format'
+import { handleServerError } from '@/lib/handle-server-error'
+import { accountPasswordSchema } from '@/lib/password-policy'
 import { ROLE } from '@/lib/roles'
+import { AuthOperationError } from '@/lib/secure-verification'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -96,7 +102,7 @@ import {
   transformFormDataToPayload,
   transformUserToFormDefaults,
 } from '../lib'
-import { type User } from '../types'
+import type { User } from '../types'
 import { UserQuotaDialog } from './user-quota-dialog'
 import { useUsers } from './users-provider'
 
@@ -111,7 +117,10 @@ const IMAGE_RESOLUTION_LEVELS = ['1k', '2k', '4k'] as const
 
 type ImageQualityLevel = (typeof IMAGE_QUALITY_LEVELS)[number]
 type ImageResolutionLevel = (typeof IMAGE_RESOLUTION_LEVELS)[number]
-type ImageQualityPriceDraft = Record<ImageQualityLevel, Record<ImageResolutionLevel, string>>
+type ImageQualityPriceDraft = Record<
+  ImageQualityLevel,
+  Record<ImageResolutionLevel, string>
+>
 
 function createEmptyImageQualityPriceDraft(): ImageQualityPriceDraft {
   return {
@@ -121,7 +130,6 @@ function createEmptyImageQualityPriceDraft(): ImageQualityPriceDraft {
   }
 }
 
-
 export function UsersMutateDrawer({
   open,
   onOpenChange,
@@ -129,7 +137,7 @@ export function UsersMutateDrawer({
 }: UsersMutateDrawerProps) {
   const { t } = useTranslation()
   const isUpdate = !!currentRow
-  const { triggerRefresh } = useUsers()
+  const { triggerRefresh, requestVerification } = useUsers()
   const currentUser = useAuthStore((s) => s.auth.user)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false)
@@ -137,15 +145,18 @@ export function UsersMutateDrawer({
   const [privateModelPrice, setPrivateModelPrice] = useState('')
   const [imageQualitySheetOpen, setImageQualitySheetOpen] = useState(false)
   const [imageQualityModelName, setImageQualityModelName] = useState('')
-  const [imageQualityPriceDraft, setImageQualityPriceDraft] = useState<ImageQualityPriceDraft>(() =>
-    createEmptyImageQualityPriceDraft()
-  )
-  const [isSavingImageQualityPrice, setIsSavingImageQualityPrice] = useState(false)
+  const [imageQualityPriceDraft, setImageQualityPriceDraft] =
+    useState<ImageQualityPriceDraft>(() => createEmptyImageQualityPriceDraft())
+  const [isSavingImageQualityPrice, setIsSavingImageQualityPrice] =
+    useState(false)
+  // Matrix as loaded from the server; an unchanged matrix is not resubmitted so
+  // routine edits of an administrator do not require step-up verification.
+  const loadedPermissions = useRef<AdminPermissionMatrix | undefined>(undefined)
 
   // Fetch groups
   const { data: groupsData } = useQuery({
     queryKey: ['groups'],
-    queryFn: getGroups,
+    queryFn: async () => requireServerSuccess(await getGroups()),
     staleTime: 5 * 60 * 1000,
   })
 
@@ -154,23 +165,23 @@ export function UsersMutateDrawer({
   // Permission catalog is owned by the backend; fetched once and reused.
   const { data: permissionCatalog = EMPTY_PERMISSION_CATALOG } = useQuery({
     queryKey: ['admin-permission-catalog'],
-    queryFn: getPermissionCatalog,
+    queryFn: async () => requireServerSuccess(await getPermissionCatalog()),
     staleTime: 5 * 60 * 1000,
   })
 
-  const {
-    data: privatePricesData,
-    refetch: refetchPrivatePrices,
-  } = useQuery({
+  const { data: privatePricesData, refetch: refetchPrivatePrices } = useQuery({
     queryKey: ['user-model-prices', currentRow?.id],
-    queryFn: () => getUserModelPrices(currentRow!.id),
+    queryFn: () => {
+      if (!currentRow) throw new Error(t('User is required'))
+      return getUserModelPrices(currentRow.id).then(requireServerSuccess)
+    },
     enabled: open && isUpdate && !!currentRow,
     staleTime: 0,
   })
 
   const { data: perCallModelsData } = useQuery({
     queryKey: ['per-call-priced-models'],
-    queryFn: getPerCallPricedModels,
+    queryFn: async () => requireServerSuccess(await getPerCallPricedModels()),
     enabled: open && isUpdate,
     staleTime: 5 * 60 * 1000,
   })
@@ -187,16 +198,21 @@ export function UsersMutateDrawer({
   useEffect(() => {
     if (open && isUpdate && currentRow) {
       // For update, fetch fresh data
-      getUser(currentRow.id).then((result) => {
-        if (result.success && result.data) {
-          form.reset(transformUserToFormDefaults(result.data))
-        }
-      })
+      getUser(currentRow.id)
+        .then((result) => {
+          if (result.success && result.data) {
+            loadedPermissions.current = result.data.admin_permissions
+            form.reset(transformUserToFormDefaults(result.data))
+          } else {
+            handleServerError(result, t('Failed to load'))
+          }
+        })
+        .catch((error) => handleServerError(error, t('Failed to load')))
     } else if (open && !isUpdate) {
       // For create, reset to defaults
       form.reset(USER_FORM_DEFAULT_VALUES)
     }
-  }, [open, isUpdate, currentRow, form])
+  }, [open, isUpdate, currentRow, form, t])
 
   const { meta: currencyMeta } = getCurrencyDisplay()
   const currencyLabel = getCurrencyLabel()
@@ -208,12 +224,11 @@ export function UsersMutateDrawer({
   const targetIsAdmin = (selectedRole ?? currentRow?.role ?? 0) >= ROLE.ADMIN
 
   const onSubmit = async (data: UserFormValues) => {
-    if (!isUpdate) {
-      const passwordLength = data.password?.length || 0
-      if (passwordLength < 8 || passwordLength > 20) {
+    if (!isUpdate || data.password) {
+      if (!accountPasswordSchema.safeParse(data.password ?? '').success) {
         form.setError('password', {
           type: 'manual',
-          message: t('Password must be between 8 and 20 characters'),
+          message: t('Password must contain between 8 and 128 characters.'),
         })
         return
       }
@@ -226,9 +241,54 @@ export function UsersMutateDrawer({
         currentRow?.id,
         permissionCatalog
       )
+      if (
+        isUpdate &&
+        payload.admin_permissions &&
+        JSON.stringify(payload.admin_permissions) ===
+          JSON.stringify(
+            normalizeAdminPermissions(
+              loadedPermissions.current,
+              permissionCatalog
+            )
+          )
+      ) {
+        delete payload.admin_permissions
+      }
+      // Resetting a password, rewriting admin permissions, or creating an
+      // administrator changes who can sign in or what they may do.
+      let proofToken: string | undefined
+      if (isUpdate && currentRow) {
+        if (payload.password || payload.admin_permissions) {
+          const proof = await requestVerification({
+            scope: 'admin.user.update',
+            context: { user_id: currentRow.id },
+            title: t('Verify to update user credentials'),
+            description: t(
+              'Confirm your identity before changing the account {{username}}.',
+              { username: currentRow.username }
+            ),
+          })
+          if (!proof) return
+          proofToken = proof.proof_token
+        }
+      } else if ((payload.role ?? 0) >= ROLE.ADMIN) {
+        const proof = await requestVerification({
+          scope: 'admin.user.create',
+          context: { role: payload.role ?? ROLE.ADMIN },
+          title: t('Verify to create administrator'),
+          description: t(
+            'Confirm your identity before creating an administrator account.'
+          ),
+        })
+        if (!proof) return
+        proofToken = proof.proof_token
+      }
       const result = isUpdate
-        ? await updateUser(payload as typeof payload & { id: number })
-        : await createUser(payload)
+        ? await updateUser(
+            payload as typeof payload & { id: number },
+            proofToken
+          )
+        : await createUser(payload, proofToken)
 
       if (result.success) {
         toast.success(
@@ -239,15 +299,13 @@ export function UsersMutateDrawer({
         onOpenChange(false)
         triggerRefresh()
       } else {
-        toast.error(
-          result.message ||
-            (isUpdate
-              ? t(ERROR_MESSAGES.UPDATE_FAILED)
-              : t(ERROR_MESSAGES.CREATE_FAILED))
-        )
+        handleServerError(result, t(ERROR_MESSAGES.CREATE_FAILED))
       }
-    } catch (_error) {
-      toast.error(t(ERROR_MESSAGES.UNEXPECTED))
+    } catch (error) {
+      handleServerError(
+        AuthOperationError.from(error),
+        t(ERROR_MESSAGES.UNEXPECTED)
+      )
     } finally {
       setIsSubmitting(false)
     }
@@ -255,11 +313,16 @@ export function UsersMutateDrawer({
 
   const refreshUserData = async () => {
     if (!currentRow) return
-    const result = await getUser(currentRow.id)
-    if (result.success && result.data) {
-      form.reset(transformUserToFormDefaults(result.data))
+    try {
+      const result = requireServerSuccess(await getUser(currentRow.id))
+      if (result.success && result.data) {
+        loadedPermissions.current = result.data.admin_permissions
+        form.reset(transformUserToFormDefaults(result.data))
+      }
+      triggerRefresh()
+    } catch (error) {
+      handleServerError(error, t('Failed to load'))
     }
-    triggerRefresh()
   }
 
   const handleSavePrivatePrice = async () => {
@@ -271,36 +334,41 @@ export function UsersMutateDrawer({
       return
     }
 
-    if (!Number.isFinite(price) || price < 0) {
+    if (
+      privateModelPrice.trim() === '' ||
+      !Number.isFinite(price) ||
+      price < 0
+    ) {
       toast.error(t('请输入正确的秘价'))
       return
     }
 
-    const result = await upsertUserModelPrice(currentRow.id, {
-      model_name: privateModelName,
-      price,
-      enabled: true,
-    })
-
-    if (result.success) {
+    try {
+      requireServerSuccess(
+        await upsertUserModelPrice(currentRow.id, {
+          model_name: privateModelName,
+          price,
+          enabled: true,
+        })
+      )
       toast.success(t('模型秘价已保存'))
       setPrivateModelName('')
       setPrivateModelPrice('')
-      refetchPrivatePrices()
-    } else {
-      toast.error(result.message || t('保存模型秘价失败'))
+      void refetchPrivatePrices()
+    } catch (error) {
+      handleServerError(error, t('保存模型秘价失败'))
     }
   }
 
   const handleDeletePrivatePrice = async (modelName: string) => {
     if (!currentRow) return
 
-    const result = await deleteUserModelPrice(currentRow.id, modelName)
-    if (result.success) {
+    try {
+      requireServerSuccess(await deleteUserModelPrice(currentRow.id, modelName))
       toast.success(t('模型秘价已删除'))
-      refetchPrivatePrices()
-    } else {
-      toast.error(result.message || t('删除模型秘价失败'))
+      void refetchPrivatePrices()
+    } catch (error) {
+      handleServerError(error, t('删除模型秘价失败'))
     }
   }
 
@@ -309,9 +377,11 @@ export function UsersMutateDrawer({
     setImageQualityModelName(modelName)
     const draft = createEmptyImageQualityPriceDraft()
 
-    const result = await getUserModelImageQualityPrices(currentRow.id, modelName)
-    if (result.success && result.data) {
-      for (const item of result.data) {
+    try {
+      const result = requireServerSuccess(
+        await getUserModelImageQualityPrices(currentRow.id, modelName)
+      )
+      for (const item of result.data ?? []) {
         if (
           IMAGE_QUALITY_LEVELS.includes(item.quality) &&
           IMAGE_RESOLUTION_LEVELS.includes(item.resolution)
@@ -319,10 +389,11 @@ export function UsersMutateDrawer({
           draft[item.quality][item.resolution] = String(item.price)
         }
       }
+      setImageQualityPriceDraft(draft)
+      setImageQualitySheetOpen(true)
+    } catch (error) {
+      handleServerError(error, t('加载生图品质定价失败'))
     }
-
-    setImageQualityPriceDraft(draft)
-    setImageQualitySheetOpen(true)
   }
 
   const handleImageQualityDraftChange = (
@@ -369,6 +440,8 @@ export function UsersMutateDrawer({
       } else {
         toast.error(result.message || t('保存用户品质密价失败'))
       }
+    } catch (error) {
+      handleServerError(error, t('保存用户品质密价失败'))
     } finally {
       setIsSavingImageQualityPrice(false)
     }
@@ -376,16 +449,18 @@ export function UsersMutateDrawer({
 
   const handleDeleteImageQualityPrivatePrice = async () => {
     if (!currentRow || !imageQualityModelName) return
-    const result = await deleteUserModelImageQualityPrices(
-      currentRow.id,
-      imageQualityModelName
-    )
-    if (result.success) {
+    try {
+      requireServerSuccess(
+        await deleteUserModelImageQualityPrices(
+          currentRow.id,
+          imageQualityModelName
+        )
+      )
       toast.success(t('用户品质密价已删除'))
       setImageQualityPriceDraft(createEmptyImageQualityPriceDraft())
       setImageQualitySheetOpen(false)
-    } else {
-      toast.error(result.message || t('删除用户品质密价失败'))
+    } catch (error) {
+      handleServerError(error, t('删除用户品质密价失败'))
     }
   }
 
@@ -456,7 +531,8 @@ export function UsersMutateDrawer({
                             { value: '10', label: t('Admin') },
                           ]}
                           onValueChange={(value) =>
-                            value !== null && field.onChange(parseInt(value))
+                            value !== null &&
+                            field.onChange(Number.parseInt(value))
                           }
                           value={String(field.value)}
                         >
@@ -516,7 +592,7 @@ export function UsersMutateDrawer({
                           placeholder={
                             isUpdate
                               ? t('Leave empty to keep unchanged')
-                              : t('Enter password (8-20 characters)')
+                              : t('Enter password (8–128 characters)')
                           }
                         />
                       </FormControl>
@@ -537,31 +613,18 @@ export function UsersMutateDrawer({
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>{t('Group')}</FormLabel>
-                        <Select
-                          items={[
-                            ...groups.map((group) => ({
+                        <FormControl>
+                          <Combobox
+                            options={groups.map((group) => ({
                               value: group,
                               label: group,
-                            })),
-                          ]}
-                          onValueChange={field.onChange}
-                          value={field.value}
-                        >
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder={t('Select a group')} />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent alignItemWithTrigger={false}>
-                            <SelectGroup>
-                              {groups.map((group) => (
-                                <SelectItem key={group} value={group}>
-                                  {group}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          </SelectContent>
-                        </Select>
+                            }))}
+                            onValueChange={field.onChange}
+                            value={field.value}
+                            className='w-full'
+                            placeholder={t('Select a group')}
+                          />
+                        </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -650,52 +713,11 @@ export function UsersMutateDrawer({
                         )
                         return (
                           <FormItem>
-                            <div className='space-y-3'>
-                              {permissionCatalog.resources.map((resource) => (
-                                <div
-                                  key={resource.resource}
-                                  className='space-y-2 rounded-md border p-3'
-                                >
-                                  <div className='text-sm font-medium'>
-                                    {t(resource.label_key)}
-                                  </div>
-                                  <div className='space-y-2'>
-                                    {resource.actions.map((option) => (
-                                      <label
-                                        key={option.action}
-                                        className='flex items-start gap-3'
-                                      >
-                                        <Checkbox
-                                          checked={
-                                            selected[resource.resource]?.[
-                                              option.action
-                                            ] === true
-                                          }
-                                          onCheckedChange={(checked) => {
-                                            field.onChange({
-                                              ...selected,
-                                              [resource.resource]: {
-                                                ...selected[resource.resource],
-                                                [option.action]:
-                                                  checked === true,
-                                              },
-                                            })
-                                          }}
-                                        />
-                                        <span className='flex flex-col gap-1'>
-                                          <span className='text-sm font-medium'>
-                                            {t(option.label_key)}
-                                          </span>
-                                          <span className='text-muted-foreground text-xs'>
-                                            {t(option.description_key)}
-                                          </span>
-                                        </span>
-                                      </label>
-                                    ))}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
+                            <PermissionMatrix
+                              resources={permissionCatalog.resources}
+                              value={selected}
+                              onChange={field.onChange}
+                            />
                             <FormMessage />
                           </FormItem>
                         )
@@ -719,119 +741,117 @@ export function UsersMutateDrawer({
                   </SideDrawerSection>
                 )}
 
-                {/* User Private Model Pricing */}
-                {isUpdate && currentRow && (
-                  <SideDrawerSection>
-                    <h3 className='text-sm font-medium'>
-                      {t('模型秘价设置')}
-                    </h3>
-                    <p className='text-muted-foreground text-xs'>
-                      {t('仅支持按次/固定价格模型。设置后，该用户调用此模型会优先使用这里的专属价格。')}
-                    </p>
+              {/* User Private Model Pricing */}
+              {isUpdate && currentRow && (
+                <SideDrawerSection>
+                  <h3 className='text-sm font-medium'>{t('模型秘价设置')}</h3>
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      '仅支持按次/固定价格模型。设置后，该用户调用此模型会优先使用这里的专属价格。'
+                    )}
+                  </p>
 
-                    <div className='space-y-3 rounded-md border p-3'>
-                      <div className='grid grid-cols-1 gap-2 sm:grid-cols-[1fr_140px_auto]'>
-                        <Select
-                          items={perCallModels.map((item) => ({
-                            value: item.model_name,
-                            label: `${item.model_name} (${item.model_price})`,
-                          }))}
-                          value={privateModelName}
-                          onValueChange={(value) =>
-                            value !== null && setPrivateModelName(value)
+                  <div className='space-y-3 rounded-md border p-3'>
+                    <div className='grid grid-cols-1 gap-2 sm:grid-cols-[1fr_140px_auto]'>
+                      <Select
+                        items={perCallModels.map((item) => ({
+                          value: item.model_name,
+                          label: `${item.model_name} (${item.model_price})`,
+                        }))}
+                        value={privateModelName}
+                        onValueChange={(value) =>
+                          value !== null && setPrivateModelName(value)
+                        }
+                      >
+                        <SelectTrigger aria-label={t('选择按次模型')}>
+                          <SelectValue placeholder={t('选择按次模型')} />
+                        </SelectTrigger>
+                        <SelectContent alignItemWithTrigger={false}>
+                          <SelectGroup>
+                            {perCallModels.map((item) => (
+                              <SelectItem
+                                key={item.model_name}
+                                value={item.model_name}
+                              >
+                                {item.model_name} / {item.model_price}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+
+                      <Input
+                        value={privateModelPrice}
+                        onChange={(e) => setPrivateModelPrice(e.target.value)}
+                        placeholder={t('秘价，例如 0.001')}
+                        inputMode='decimal'
+                      />
+
+                      <div className='flex gap-2'>
+                        <Button type='button' onClick={handleSavePrivatePrice}>
+                          {t('添加/更新')}
+                        </Button>
+                        <Button
+                          type='button'
+                          variant='outline'
+                          disabled={!privateModelName}
+                          onClick={() =>
+                            openImageQualityPriceSheet(privateModelName)
                           }
                         >
-                          <SelectTrigger>
-                            <SelectValue placeholder={t('选择按次模型')} />
-                          </SelectTrigger>
-                          <SelectContent alignItemWithTrigger={false}>
-                            <SelectGroup>
-                              {perCallModels.map((item) => (
-                                <SelectItem
-                                  key={item.model_name}
-                                  value={item.model_name}
-                                >
-                                  {item.model_name} / {item.model_price}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          </SelectContent>
-                        </Select>
-
-                        <Input
-                          value={privateModelPrice}
-                          onChange={(e) => setPrivateModelPrice(e.target.value)}
-                          placeholder={t('秘价，例如 0.001')}
-                          inputMode='decimal'
-                        />
-
-                        <div className='flex gap-2'>
-                          <Button
-                            type='button'
-                            onClick={handleSavePrivatePrice}
-                          >
-                            {t('添加/更新')}
-                          </Button>
-                          <Button
-                            type='button'
-                            variant='outline'
-                            disabled={!privateModelName}
-                            onClick={() =>
-                              openImageQualityPriceSheet(privateModelName)
-                            }
-                          >
-                            {t('配置品质密价')}
-                          </Button>
-                        </div>
-                      </div>
-
-                      <div className='space-y-2'>
-                        {privatePrices.length === 0 ? (
-                          <p className='text-muted-foreground text-xs'>
-                            {t('暂无模型秘价规则')}
-                          </p>
-                        ) : (
-                          privatePrices.map((item) => (
-                            <div
-                              key={item.id}
-                              className='flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm'
-                            >
-                              <div className='min-w-0'>
-                                <div className='truncate font-medium'>
-                                  {item.model_name}
-                                </div>
-                                <div className='text-muted-foreground text-xs'>
-                                  {t('秘价')}: {item.price} / {item.enabled ? t('启用') : t('关闭')}
-                                </div>
-                              </div>
-                              <div className='flex shrink-0 gap-2'>
-                                <Button
-                                  type='button'
-                                  variant='outline'
-                                  onClick={() =>
-                                    openImageQualityPriceSheet(item.model_name)
-                                  }
-                                >
-                                  {t('品质密价')}
-                                </Button>
-                                <Button
-                                  type='button'
-                                  variant='outline'
-                                  onClick={() =>
-                                    handleDeletePrivatePrice(item.model_name)
-                                  }
-                                >
-                                  <Trash2 className='mr-1 h-4 w-4' />
-                                  {t('删除')}
-                                </Button>
-                              </div>
-                            </div>
-                          ))
-                        )}
+                          {t('配置品质密价')}
+                        </Button>
                       </div>
                     </div>
-                  </SideDrawerSection>
-                )}
+
+                    <div className='space-y-2'>
+                      {privatePrices.length === 0 ? (
+                        <p className='text-muted-foreground text-xs'>
+                          {t('暂无模型秘价规则')}
+                        </p>
+                      ) : (
+                        privatePrices.map((item) => (
+                          <div
+                            key={item.id}
+                            className='flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm'
+                          >
+                            <div className='min-w-0'>
+                              <div className='truncate font-medium'>
+                                {item.model_name}
+                              </div>
+                              <div className='text-muted-foreground text-xs'>
+                                {t('秘价')}: {item.price} /{' '}
+                                {item.enabled ? t('启用') : t('关闭')}
+                              </div>
+                            </div>
+                            <div className='flex shrink-0 gap-2'>
+                              <Button
+                                type='button'
+                                variant='outline'
+                                onClick={() =>
+                                  openImageQualityPriceSheet(item.model_name)
+                                }
+                              >
+                                {t('品质密价')}
+                              </Button>
+                              <Button
+                                type='button'
+                                variant='outline'
+                                onClick={() =>
+                                  handleDeletePrivatePrice(item.model_name)
+                                }
+                              >
+                                <Trash2 className='mr-1 h-4 w-4' />
+                                {t('删除')}
+                              </Button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </SideDrawerSection>
+              )}
 
               {/* Binding Information (Read-only) */}
               {isUpdate && (
@@ -841,7 +861,7 @@ export function UsersMutateDrawer({
                   </h3>
                   <p className='text-muted-foreground text-xs'>
                     {t(
-                      'Third-party account bindings (read-only, managed by user in profile settings)'
+                      'Third-party account bindings (read-only, managed by user in Security & Access)'
                     )}
                   </p>
 
@@ -887,12 +907,19 @@ export function UsersMutateDrawer({
         />
       )}
 
-      <Sheet open={imageQualitySheetOpen} onOpenChange={setImageQualitySheetOpen}>
-        <SheetContent className={sideDrawerContentClassName('sm:max-w-[520px]')}>
+      <Sheet
+        open={imageQualitySheetOpen}
+        onOpenChange={setImageQualitySheetOpen}
+      >
+        <SheetContent
+          className={sideDrawerContentClassName('sm:max-w-[520px]')}
+        >
           <SheetHeader className={sideDrawerHeaderClassName()}>
             <SheetTitle>{t('用户专属生图品质密价')}</SheetTitle>
             <SheetDescription>
-              {t('设置后，该用户调用此生图模型时优先按照这里的品质/分辨率价格扣费。')}
+              {t(
+                '设置后，该用户调用此生图模型时优先按照这里的品质/分辨率价格扣费。'
+              )}
             </SheetDescription>
           </SheetHeader>
 
@@ -903,7 +930,9 @@ export function UsersMutateDrawer({
                 <Input value={imageQualityModelName || '-'} readOnly />
               </div>
               <p className='text-muted-foreground text-xs'>
-                {t('必须完整填写 low / medium / high 下 1K / 2K / 4K 的价格。最终费用 = 对应单价 × 图片数量 n。')}
+                {t(
+                  '必须完整填写 low / medium / high 下 1K / 2K / 4K 的价格。最终费用 = 对应单价 × 图片数量 n。'
+                )}
               </p>
 
               <div className='space-y-4 rounded-md border p-3'>
@@ -912,8 +941,13 @@ export function UsersMutateDrawer({
                     <div className='text-sm font-medium'>{quality}</div>
                     <div className='grid grid-cols-3 gap-2'>
                       {IMAGE_RESOLUTION_LEVELS.map((resolution) => (
-                        <div key={`${quality}-${resolution}`} className='space-y-1'>
-                          <Label className='text-xs uppercase'>{resolution}</Label>
+                        <div
+                          key={`${quality}-${resolution}`}
+                          className='space-y-1'
+                        >
+                          <Label className='text-xs uppercase'>
+                            {resolution}
+                          </Label>
                           <Input
                             inputMode='decimal'
                             placeholder='0.00'

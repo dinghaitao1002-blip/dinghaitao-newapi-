@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/model_setting"
-	"github.com/QuantumNous/new-api/types"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,8 +56,8 @@ func seedAsyncImageBilling(t *testing.T) (*gin.Context, *relaycommon.RelayInfo, 
 		UserSetting: dto.UserSetting{BillingPreference: "wallet_only"}, UsingGroup: "default",
 		OriginModelName: "async-service-test", StartTime: time.Now(), RelayFormat: types.RelayFormatOpenAIImage,
 		ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 8103},
-		PriceData: types.PriceData{UsePrice: true, ModelPrice: 100 / common.QuotaPerUnit,
-			GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 1}},
+		PriceData: hosttypes.PriceData{UsePrice: true, ModelPrice: 100 / common.QuotaPerUnit,
+			GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1}},
 	}
 	return c, info, task
 }
@@ -74,7 +75,10 @@ func TestImageAsyncBillingSettlementAndRefundReplay(t *testing.T) {
 	c, info, task := seedAsyncImageBilling(t)
 	require.Nil(t, PreConsumeBilling(c, 100, info))
 	assert.True(t, info.ForcePreConsume)
-	require.NoError(t, info.Billing.Reserve(150))
+	originalSession := info.Billing
+	require.Nil(t, PreConsumeBilling(c, 150, info))
+	assert.Same(t, originalSession, info.Billing)
+	require.NoError(t, info.Billing.ReserveBeforeSubmit(150))
 	assert.Equal(t, 150, info.FinalPreConsumedQuota)
 	require.NoError(t, info.Billing.Settle(120))
 	require.NoError(t, info.Billing.Settle(120))

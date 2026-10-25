@@ -22,10 +22,10 @@ type BodyStorage interface {
 	IsDisk() bool
 	// NewReader returns an independent reader positioned at the start of the
 	// stored payload. Each call returns a reader with its own cursor, so
-	// callers can replay the body concurrently with, or after, other readers
-	// without sharing seek state. Closing the returned reader releases only
-	// that reader, never the storage itself; after the storage has been
-	// closed, NewReader returns ErrStorageClosed.
+	// callers (e.g. http.Request.GetBody) can replay the body concurrently
+	// with, or after, other readers without sharing seek state. Closing the
+	// returned reader releases only that reader, never the storage itself;
+	// after the storage has been closed, NewReader returns ErrStorageClosed.
 	NewReader() (io.ReadCloser, error)
 }
 
@@ -265,7 +265,8 @@ func (d *diskStorage) NewReader() (io.ReadCloser, error) {
 	// A separate file descriptor over the same cache file: an independent
 	// cursor at zero copy cost. Closing the returned reader closes only that
 	// descriptor; the storage keeps owning the primary descriptor and the
-	// file's lifetime.
+	// file's lifetime. Readers opened before Close stay usable even after the
+	// file is unlinked, as the descriptor keeps the inode alive.
 	file, err := os.Open(d.filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open body cache file for replay: %w", err)
@@ -293,7 +294,7 @@ func CreateBodyStorage(data []byte) (BodyStorage, error) {
 		storage, err := newDiskStorage(data, GetDiskCachePath())
 		if err != nil {
 			// 如果磁盘存储失败，回退到内存存储
-			SysError(fmt.Sprintf("failed to create disk storage, falling back to memory: %v", err))
+			SysError(LogText("failed to create disk storage, falling back to memory: %v", err))
 			return newMemoryStorage(data), nil
 		}
 		return storage, nil
@@ -344,12 +345,6 @@ func CreateBodyStorageFromReader(reader io.Reader, contentLength int64, maxBytes
 		IncrementDiskCacheHits()
 	}
 	return storage, nil
-}
-
-// ReaderOnly wraps an io.Reader to hide io.Closer, preventing http.NewRequest
-// from type-asserting io.ReadCloser and closing the underlying BodyStorage.
-func ReaderOnly(r io.Reader) io.Reader {
-	return struct{ io.Reader }{r}
 }
 
 type replayableBodyReader struct {

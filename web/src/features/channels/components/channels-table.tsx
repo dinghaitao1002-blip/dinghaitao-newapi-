@@ -23,9 +23,11 @@ import type {
   OnChangeFn,
   SortingState,
   Row,
+  ColumnDef,
 } from '@tanstack/react-table'
-import { Eye, EyeOff } from 'lucide-react'
+import { Eye, EyeOff, RefreshCw } from 'lucide-react'
 import { useState, useMemo, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -34,6 +36,7 @@ import {
   DataTablePage,
   useDebouncedColumnFilter,
   useDataTable,
+  useDataTableViewMode,
 } from '@/components/data-table'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -44,7 +47,10 @@ import {
 } from '@/components/ui/tooltip'
 import { useMediaQuery } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
-import { getLobeIcon } from '@/lib/lobe-icon'
+import { hasPermission } from '@/lib/admin-permissions'
+import { requireServerSuccess } from '@/lib/server-error-message'
+import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { getChannels, searchChannels, getGroups } from '../api'
 import {
@@ -52,17 +58,26 @@ import {
   CHANNEL_STATUS,
   CHANNEL_STATUS_OPTIONS,
 } from '../constants'
+import { useChannelPriorityDrag } from '../hooks/use-channel-priority-drag'
+import { useChannelPriorityOrder } from '../hooks/use-channel-priority-order'
 import {
   channelsQueryKeys,
   aggregateChannelsByTag,
   getChannelTableRowId,
   isTagAggregateRow,
-  getChannelTypeIcon,
   getChannelTypeLabel,
 } from '../lib'
 import type { Channel, ChannelSortBy } from '../types'
 import { ChannelCard } from './channel-card'
 import { ChannelCategoryBar } from './channel-category-bar'
+import { ChannelPriorityContext } from './channel-priority-context'
+import {
+  ChannelPriorityHandle,
+  ChannelPriorityModeToggle,
+  ChannelPriorityStatus,
+} from './channel-priority-controls'
+import { ChannelPriorityDropHint } from './channel-priority-drop-hint'
+import { ChannelTypeLogo } from './channel-type-badge'
 import { useChannelsColumns } from './channels-columns'
 import { useChannels } from './channels-provider'
 import { DataTableBulkActions } from './data-table-bulk-actions'
@@ -92,15 +107,16 @@ export function ChannelsTable() {
   const { t } = useTranslation()
   const {
     enableTagMode,
-    idSort,
+    sorting,
+    setSorting,
     batchMode,
     sensitiveVisible,
     setSensitiveVisible,
+    priorityActionContainer,
   } = useChannels()
   const isMobile = useMediaQuery('(max-width: 640px)')
 
-  // Table state
-  const [sorting, setSorting] = useState<SortingState>([])
+  const idSort = sorting[0]?.id === 'id'
 
   // URL state management
   const {
@@ -198,19 +214,16 @@ export function ChannelsTable() {
   }, [sorting])
 
   const handleSortingChange: OnChangeFn<SortingState> = (updater) => {
-    setSorting((previous) => {
-      const next = typeof updater === 'function' ? updater(previous) : updater
-      if (pagination.pageIndex > 0) {
-        onPaginationChange({ ...pagination, pageIndex: 0 })
-      }
-      return next
-    })
+    setSorting(updater)
+    if (pagination.pageIndex > 0) {
+      onPaginationChange({ ...pagination, pageIndex: 0 })
+    }
   }
 
   // Fetch groups for filter
   const { data: groupsData } = useQuery({
     queryKey: ['groups'],
-    queryFn: getGroups,
+    queryFn: async () => requireServerSuccess(await getGroups()),
   })
 
   const groupOptions = useMemo(
@@ -224,7 +237,7 @@ export function ChannelsTable() {
 
   // Fetch channels data
   // eslint-disable-next-line @tanstack/query/exhaustive-deps
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: channelsQueryKeys.list({
       keyword: globalFilter,
       model: modelFilter,
@@ -252,55 +265,59 @@ export function ChannelsTable() {
     }),
     queryFn: async () => {
       if (shouldSearch) {
-        return searchChannels({
-          keyword: globalFilter,
-          model: modelFilter,
-          group:
-            groupFilter.length > 0 && !groupFilter.includes('all')
-              ? groupFilter[0]
-              : undefined,
-          category:
-            categoryFilter.length > 0 && !categoryFilter.includes('all')
-              ? categoryFilter[0]
-              : undefined,
-          status:
-            statusFilter.length > 0 && !statusFilter.includes('all')
-              ? statusFilter[0]
-              : undefined,
-          type:
-            typeFilter.length > 0 && !typeFilter.includes('all')
-              ? Number(typeFilter[0])
-              : undefined,
-          tag_mode: enableTagMode,
-          id_sort: idSort,
-          ...sortParams,
-          p: pagination.pageIndex + 1,
-          page_size: pagination.pageSize,
-        })
+        return requireServerSuccess(
+          await searchChannels({
+            keyword: globalFilter,
+            model: modelFilter,
+            group:
+              groupFilter.length > 0 && !groupFilter.includes('all')
+                ? groupFilter[0]
+                : undefined,
+            category:
+              categoryFilter.length > 0 && !categoryFilter.includes('all')
+                ? categoryFilter[0]
+                : undefined,
+            status:
+              statusFilter.length > 0 && !statusFilter.includes('all')
+                ? statusFilter[0]
+                : undefined,
+            type:
+              typeFilter.length > 0 && !typeFilter.includes('all')
+                ? Number(typeFilter[0])
+                : undefined,
+            tag_mode: enableTagMode,
+            id_sort: idSort,
+            ...sortParams,
+            p: pagination.pageIndex + 1,
+            page_size: pagination.pageSize,
+          })
+        )
       } else {
-        return getChannels({
-          group:
-            groupFilter.length > 0 && !groupFilter.includes('all')
-              ? groupFilter[0]
-              : undefined,
-          category:
-            categoryFilter.length > 0 && !categoryFilter.includes('all')
-              ? categoryFilter[0]
-              : undefined,
-          status:
-            statusFilter.length > 0 && !statusFilter.includes('all')
-              ? statusFilter[0]
-              : undefined,
-          type:
-            typeFilter.length > 0 && !typeFilter.includes('all')
-              ? Number(typeFilter[0])
-              : undefined,
-          tag_mode: enableTagMode,
-          id_sort: idSort,
-          ...sortParams,
-          p: pagination.pageIndex + 1,
-          page_size: pagination.pageSize,
-        })
+        return requireServerSuccess(
+          await getChannels({
+            group:
+              groupFilter.length > 0 && !groupFilter.includes('all')
+                ? groupFilter[0]
+                : undefined,
+            category:
+              categoryFilter.length > 0 && !categoryFilter.includes('all')
+                ? categoryFilter[0]
+                : undefined,
+            status:
+              statusFilter.length > 0 && !statusFilter.includes('all')
+                ? statusFilter[0]
+                : undefined,
+            type:
+              typeFilter.length > 0 && !typeFilter.includes('all')
+                ? Number(typeFilter[0])
+                : undefined,
+            tag_mode: enableTagMode,
+            id_sort: idSort,
+            ...sortParams,
+            p: pagination.pageIndex + 1,
+            page_size: pagination.pageSize,
+          })
+        )
       }
     },
     placeholderData: (previousData) => previousData,
@@ -321,12 +338,89 @@ export function ChannelsTable() {
   const typeCounts = data?.data?.type_counts
   const categoryCounts = data?.data?.category_counts
 
-  // Columns configuration
-  const columns = useChannelsColumns({ enableSelection: batchMode })
+  const [viewMode, setViewMode] = useDataTableViewMode({
+    storageKey: CHANNELS_VIEW_MODE_STORAGE_KEY,
+    defaultMode: 'card',
+  })
+  const user = useAuthStore((state) => state.auth.user)
+  const sortField = (sorting[0]?.id ??
+    (idSort ? 'id' : 'priority')) as ChannelSortBy
+  const sortDesc = sorting[0]?.desc ?? true
+  const [reorderEnabled, setReorderEnabled] = useState(false)
+  const canReorder =
+    sortField === 'priority' &&
+    !enableTagMode &&
+    hasPermission(user, 'channel', 'write')
+  const reorderActive = reorderEnabled && canReorder
+  useEffect(() => {
+    if (!canReorder) setReorderEnabled(false)
+  }, [canReorder])
+  const reorderScope = JSON.stringify([
+    viewMode,
+    reorderActive,
+    sorting,
+    idSort,
+    enableTagMode,
+    columnFilters,
+    globalFilter,
+    pagination,
+    channels.map((channel) => [channel.id, channel.priority]),
+  ])
+  const priorityOrder = useChannelPriorityOrder({
+    channels,
+    desc: sortDesc,
+    scope: reorderScope,
+    enabled: reorderActive,
+  })
+  const drag = useChannelPriorityDrag({
+    items: channels,
+    desc: sortDesc,
+    enabled: reorderActive && !priorityOrder.saving && !isFetching,
+    scope: reorderScope,
+    begin: priorityOrder.begin,
+    select: priorityOrder.select,
+    commit: priorityOrder.commit,
+    cancel: priorityOrder.cancel,
+    previewStore: priorityOrder.previewStore,
+  })
+  let dragReason: 'sort' | 'tag' | 'permission' | 'busy' | null = null
+  if (sortField !== 'priority') dragReason = 'sort'
+  else if (enableTagMode) dragReason = 'tag'
+  else if (!hasPermission(user, 'channel', 'write')) dragReason = 'permission'
+  else if (priorityOrder.saving || isFetching) dragReason = 'busy'
+
+  const dragControls = useMemo(
+    () => ({ reason: dragReason, start: drag.start, keyDown: drag.keyDown }),
+    [dragReason, drag.start, drag.keyDown]
+  )
+
+  // Reuse the same handle cell in the table and channel cards.
+  const baseColumns = useChannelsColumns({ enableSelection: batchMode })
+  const columns = useMemo<ColumnDef<Channel>[]>(
+    () =>
+      reorderActive
+        ? [
+            {
+              id: 'reorder',
+              header: '',
+              size: 40,
+              minSize: 40,
+              maxSize: 40,
+              enableSorting: false,
+              enableHiding: false,
+              enableResizing: false,
+              meta: { mobileHidden: true },
+              cell: ({ row }) => <ChannelPriorityHandle id={row.original.id} />,
+            },
+            ...baseColumns,
+          ]
+        : baseColumns,
+    [baseColumns, reorderActive]
+  )
 
   // React Table instance
   const { table } = useDataTable({
-    data: channels,
+    data: priorityOrder.items,
     columns,
     totalCount,
     sorting,
@@ -405,12 +499,11 @@ export function ChannelsTable() {
         count: totalTypes,
       },
       ...typeIds.map((item) => {
-        const iconName = getChannelTypeIcon(item.type)
         return {
           label: getChannelTypeLabel(item.type),
           value: String(item.type),
           count: item.count,
-          iconNode: getLobeIcon(`${iconName}.Color`, 16),
+          iconNode: <ChannelTypeLogo type={item.type} size={16} />,
         }
       }),
     ]
@@ -425,101 +518,161 @@ export function ChannelsTable() {
   ]
 
   return (
-    <DataTablePage
-      table={table}
-      columns={columns}
-      isLoading={isLoading}
-      isFetching={isFetching}
-      emptyTitle={t('No Channels Found')}
-      emptyDescription={t(
-        'No channels available. Create your first channel to get started.'
-      )}
-      skeletonKeyPrefix='channel-skeleton'
-      enableCardView
-      viewModeStorageKey={CHANNELS_VIEW_MODE_STORAGE_KEY}
-      renderCard={(row, { isSelected }) => (
-        <ChannelCard row={row} isSelected={isSelected} />
-      )}
-      cardGridClassName='grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-3'
-      applyHeaderSize
-      toolbarProps={{
-        searchPlaceholder: t('Filter by name, ID, or key...'),
-        searchDebounceMs: 500,
-        onReset: () => {
-          resetModelFilterInput()
-        },
-        additionalSearch: (
-          <Input
-            placeholder={t('Filter by model...')}
-            value={modelFilterInput}
-            onChange={onModelFilterInputChange}
-            onCompositionStart={onModelFilterCompositionStart}
-            onCompositionEnd={onModelFilterCompositionEnd}
-            className='w-full sm:w-[150px] lg:w-[180px]'
-          />
-        ),
-        filters: [
-          {
-            columnId: 'status',
-            title: t('Status'),
-            options: [...CHANNEL_STATUS_OPTIONS],
-            singleSelect: true,
-          },
-          {
-            columnId: 'type',
-            title: t('Type'),
-            options: typeFilterOptions,
-            singleSelect: true,
-          },
-          {
-            columnId: 'group',
-            title: t('Group'),
-            options: groupFilterOptions,
-            singleSelect: true,
-          },
-        ],
-        preActions: (
-          <>
-            <ChannelCategoryBar
-              selectedCategory={categoryFilter[0] || 'all'}
-              categoryCounts={categoryCounts}
-              onSelect={(category) => {
-                table
-                  .getColumn('category')
-                  ?.setFilterValue(category === 'all' ? undefined : [category])
-              }}
+    <ChannelPriorityContext.Provider value={dragControls}>
+      {priorityActionContainer &&
+        createPortal(
+          <ChannelPriorityModeToggle
+            active={reorderActive}
+            viewMode={viewMode}
+            reason={dragReason}
+            onChange={() => setReorderEnabled((value) => !value)}
+          />,
+          priorityActionContainer
+        )}
+      <ChannelPriorityDropHint
+        container={drag.feedbackContainer}
+        order={priorityOrder}
+        channels={channels}
+      />
+      <div
+        ref={drag.root}
+        role='region'
+        aria-label={t('Channels')}
+        {...drag.rootEvents}
+        className='relative h-full min-h-0 data-[priority-dragging=true]:select-none data-[priority-dragging=true]:[&_[data-sortable-id]]:pointer-events-none'
+      >
+        <DataTablePage
+          table={table}
+          columns={columns}
+          isLoading={isLoading}
+          isFetching={isFetching}
+          emptyTitle={t('No Channels Found')}
+          emptyDescription={t(
+            'No channels available. Create your first channel to get started.'
+          )}
+          skeletonKeyPrefix='channel-skeleton'
+          enableCardView
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          renderCard={(row, { isSelected }) => (
+            <ChannelCard
+              row={row}
+              isSelected={isSelected}
+              reorderEnabled={reorderActive}
             />
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    variant='ghost'
-                    size='icon'
-                    onClick={() => setSensitiveVisible(!sensitiveVisible)}
-                    aria-label={sensitiveVisible ? t('Hide') : t('Show')}
-                    className='text-muted-foreground hover:text-foreground size-8'
-                  />
-                }
-              >
-                {sensitiveVisible ? <Eye /> : <EyeOff />}
-              </TooltipTrigger>
-              <TooltipContent>
-                {sensitiveVisible ? t('Hide') : t('Show')}
-              </TooltipContent>
-            </Tooltip>
-          </>
-        ),
-      }}
-      getRowClassName={(row, { isMobile }) => {
-        if (!isDisabledChannelRow(row.original)) {
-          return undefined
-        }
-        if (isMobile) {
-          return DISABLED_ROW_MOBILE
-        }
-        return DISABLED_ROW_DESKTOP
-      }}
-      bulkActions={batchMode ? <DataTableBulkActions table={table} /> : null}
-    />
+          )}
+          cardGridClassName='grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-3'
+          applyHeaderSize
+          afterTable={<ChannelPriorityStatus order={priorityOrder} />}
+          toolbarProps={{
+            collapsibleOnMobile: true,
+            searchPlaceholder: t('Filter by name, ID, or key...'),
+            searchDebounceMs: 500,
+            onReset: () => {
+              resetModelFilterInput()
+            },
+            additionalSearch: (
+              <Input
+                placeholder={t('Filter by model...')}
+                value={modelFilterInput}
+                onChange={onModelFilterInputChange}
+                onCompositionStart={onModelFilterCompositionStart}
+                onCompositionEnd={onModelFilterCompositionEnd}
+                className='w-full sm:w-[150px] lg:w-[180px]'
+              />
+            ),
+            filters: [
+              {
+                columnId: 'status',
+                title: t('Status'),
+                options: [...CHANNEL_STATUS_OPTIONS],
+                singleSelect: true,
+              },
+              {
+                columnId: 'type',
+                title: t('Type'),
+                options: typeFilterOptions,
+                singleSelect: true,
+              },
+              {
+                columnId: 'group',
+                title: t('Group'),
+                options: groupFilterOptions,
+                singleSelect: true,
+              },
+            ],
+            preActions: (
+              <>
+                <ChannelCategoryBar
+                  selectedCategory={categoryFilter[0] || 'all'}
+                  categoryCounts={categoryCounts}
+                  onSelect={(category) => {
+                    table
+                      .getColumn('category')
+                      ?.setFilterValue(
+                        category === 'all' ? undefined : [category]
+                      )
+                  }}
+                />
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant='ghost'
+                        size='icon'
+                        onClick={() => setSensitiveVisible(!sensitiveVisible)}
+                        aria-label={sensitiveVisible ? t('Hide') : t('Show')}
+                        className='text-muted-foreground hover:text-foreground size-8'
+                      />
+                    }
+                  >
+                    {sensitiveVisible ? (
+                      <Eye aria-hidden />
+                    ) : (
+                      <EyeOff aria-hidden />
+                    )}
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {sensitiveVisible ? t('Hide') : t('Show')}
+                  </TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant='ghost'
+                        size='icon'
+                        onClick={() => void refetch()}
+                        aria-label={t('Refresh')}
+                        aria-busy={isFetching}
+                        className='text-muted-foreground hover:text-foreground size-8'
+                      />
+                    }
+                  >
+                    <RefreshCw
+                      aria-hidden
+                      className={cn(isFetching && 'animate-spin')}
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent>{t('Refresh')}</TooltipContent>
+                </Tooltip>
+              </>
+            ),
+          }}
+          getRowClassName={(row, { isMobile }) => {
+            if (!isDisabledChannelRow(row.original)) {
+              return undefined
+            }
+            if (isMobile) {
+              return DISABLED_ROW_MOBILE
+            }
+            return DISABLED_ROW_DESKTOP
+          }}
+          bulkActions={
+            batchMode ? <DataTableBulkActions table={table} /> : null
+          }
+        />
+      </div>
+    </ChannelPriorityContext.Provider>
   )
 }
