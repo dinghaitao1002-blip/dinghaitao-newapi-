@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "kling", "sora", "sunoapi", "vertex-ai", "vidu", "xai"}
+var expectedKeys = []string{"alibaba", "chatgpt2api", "doubao", "google", "hailuo", "jimeng", "kling", "sora", "sunoapi", "vertex-ai", "vidu", "xai"}
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
@@ -126,13 +126,26 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 				}
 			}
 			require.True(t, foundResponses, "openai_responses claim must be present")
-			assert.Equal(t, []string{"stream", "sync", "background"}, responsesClaim.Supports)
+			// Every built-in plugin declares its own request forms; the hooks the
+			// loader requires follow from them (stream needs renderEvents, sync or
+			// background need renderFinal).
+			require.NotEmpty(t, responsesClaim.Supports)
+			for _, mode := range responsesClaim.Supports {
+				assert.True(t, plugin.Meta.ProtocolSupports("openai_responses", mode), mode)
+			}
 			for _, model := range plugin.Meta.Models {
 				binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
 				require.True(t, claimed, model)
 				assert.Same(t, plugin, binding.Plugin)
 			}
-			for _, hook := range []string{"decodeRequest", "renderEvents", "renderFinal"} {
+			requiredHooks := []string{"decodeRequest"}
+			if plugin.Meta.ProtocolSupports("openai_responses", "stream") {
+				requiredHooks = append(requiredHooks, "renderEvents")
+			}
+			if plugin.Meta.ProtocolSupports("openai_responses", "sync") || plugin.Meta.ProtocolSupports("openai_responses", "background") {
+				requiredHooks = append(requiredHooks, "renderFinal")
+			}
+			for _, hook := range requiredHooks {
 				callable, callableErr := plugin.Engine.HasCallablePath(t.Context(), "protocols", "openai_responses", hook)
 				require.NoError(t, callableErr)
 				assert.True(t, callable, hook)
@@ -149,7 +162,13 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 }
 
 func TestBuiltInResponsesDecodersEchoChannelMappedAlias(t *testing.T) {
-	bodyOverrides := map[string]map[string]any{}
+	bodyOverrides := map[string]map[string]any{
+		"chatgpt2api": {
+			"model": "alias-under-test",
+			"input": "a cat walking on the beach",
+			"tools": []any{map[string]any{"type": "image_generation"}},
+		},
+	}
 	for _, key := range expectedKeys {
 		t.Run(key, func(t *testing.T) {
 			source, sourceErr := Source(key)
