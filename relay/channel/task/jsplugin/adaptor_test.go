@@ -2708,3 +2708,31 @@ func TestTaskAdaptorSoraKeepsCustomPricingAndBaseURLs(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskAdaptorForwardsSizeFitHeaderToPlugins(t *testing.T) {
+	plugin, err := pluginruntime.NewRegistry().Register(mockPlugin, pluginruntime.Options{})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:   &relaycommon.ChannelMeta{ChannelBaseUrl: "https://upstream.example", ApiKey: "secret"},
+		TaskRelayInfo: &relaycommon.TaskRelayInfo{},
+	}
+
+	withHeader, _ := gin.CreateTestContext(httptest.NewRecorder())
+	withHeader.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	withHeader.Request.Header.Set("Content-Type", "application/json")
+	withHeader.Request.Header.Set("X-Size-Fit", "crop")
+	withHeader.Request.Header.Set("X-Forwarded-For", "203.0.113.9")
+	headers, ok := adaptor.submitContext(withHeader, info)["requestHeaders"].(map[string]string)
+	require.True(t, ok)
+	assert.Equal(t, "application/json", headers["Content-Type"])
+	assert.Equal(t, "crop", headers["X-Size-Fit"])
+
+	withoutHeader, _ := gin.CreateTestContext(httptest.NewRecorder())
+	withoutHeader.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	withoutHeader.Request.Header.Set("Content-Type", "application/json")
+	headers, ok = adaptor.submitContext(withoutHeader, info)["requestHeaders"].(map[string]string)
+	require.True(t, ok)
+	_, forwarded := headers["X-Size-Fit"]
+	assert.False(t, forwarded)
+}
