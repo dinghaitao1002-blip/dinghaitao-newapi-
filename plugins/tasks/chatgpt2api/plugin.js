@@ -91,6 +91,22 @@ function completedImageCount(data) {
   return count;
 }
 
+// chatgpt2api answers errors with {error: {code, message}} and a non-2xx
+// status; both hooks surface that public text instead of a shape error so a
+// queue_full, invalid_response_format or auth failure is visible to the
+// caller (submit) or counted by the poller (batch).
+function upstreamError(status, body) {
+  const error = isObject(body) && isObject(body.error) ? body.error : null;
+  const ok = Number(status) >= 200 && Number(status) < 300;
+  if (ok && !error) return null;
+  if (error) {
+    const code = trimmed(error.code);
+    const message = trimmed(error.message) || "upstream error";
+    return new Error(code ? code + ": " + message : message);
+  }
+  return new Error("upstream HTTP " + String(status));
+}
+
 function responseResult(item) {
   const status = STATUS_MAP[item.status];
   if (!status) return { taskId: item.id, status: "UNKNOWN", reason: "unrecognized status " + String(item.status), data: item };
@@ -110,6 +126,8 @@ export function buildSubmitRequest(ctx) {
 }
 
 export function parseSubmitResponse(ctx, resp) {
+  const failure = upstreamError(resp.statusCode, resp.body);
+  if (failure) throw failure;
   const body = isObject(resp.body) ? resp.body : {};
   const taskId = trimmed(body.id);
   if (taskId.indexOf("resp_") !== 0) throw new Error("upstream did not return a resp_ id");
@@ -136,9 +154,12 @@ export function buildQueryRequest(ctx) {
   return buildBatchQueryRequest(ctx, [ctx]);
 }
 
-export function parseBatchResult(_ctx, body) {
+export function parseBatchResult(_ctx, body, response) {
+  const failure = upstreamError(response && response.status !== undefined ? response.status : 200, body);
+  if (failure) throw failure;
+  if (!isObject(body) || !Array.isArray(body.data)) throw new Error("batch reply has no data array");
   const results = [];
-  const data = isObject(body) && Array.isArray(body.data) ? body.data : [];
+  const data = body.data;
   for (const item of data) {
     if (isObject(item) && trimmed(item.id)) results.push(responseResult(item));
   }
@@ -151,8 +172,10 @@ export function parseBatchResult(_ctx, body) {
   return results;
 }
 
-export function parseTaskResult(ctx, body) {
-  const results = parseBatchResult(ctx, { data: [body], missing_ids: [] });
+export function parseTaskResult(ctx, body, response) {
+  const failure = upstreamError(response && response.status !== undefined ? response.status : 200, body);
+  if (failure) throw failure;
+  const results = parseBatchResult(ctx, { data: [body], missing_ids: [] }, { status: 200 });
   if (results.length) return results[0];
   return { status: "UNKNOWN", reason: "response body is not a Response object" };
 }

@@ -1750,6 +1750,14 @@ func TestPinTaskPluginEndpointRejectsUnsupportedRequestForms(t *testing.T) {
 			message:  `Background mode is not supported for this model. Remove "background": true.`,
 		},
 		{
+			name:     "sync against background only",
+			key:      "form-gate-background-only",
+			supports: `["background"]`,
+			hooks:    `renderFinal: function() { return {}; }`,
+			body:     `{"model":"form-gate-model"}`,
+			message:  `Synchronous non-streaming requests are not supported for this model. Set "background": true.`,
+		},
+		{
 			name:     "background plus stream reports stream first",
 			key:      "form-gate-no-stream",
 			supports: `["sync", "background"]`,

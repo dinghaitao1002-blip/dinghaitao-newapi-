@@ -137,6 +137,19 @@ func TestChatgpt2apiParseSubmitResponseRequiresResponseID(t *testing.T) {
 		map[string]any{"requestBody": map[string]any{}},
 		map[string]any{"statusCode": 200, "body": map[string]any{"id": "task-1"}})
 	require.ErrorContains(t, err, "resp_")
+
+	// chatgpt2api's public submit errors (queue_full, invalid_response_format,
+	// bad X-Size-Fit) must reach the client, not a generic "no resp_ id".
+	_, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse",
+		map[string]any{"requestBody": map[string]any{}},
+		map[string]any{"statusCode": 503, "body": map[string]any{"error": map[string]any{"code": "queue_full", "message": "the background queue is full, retry later"}}})
+	require.ErrorContains(t, err, "queue_full")
+	require.ErrorContains(t, err, "the background queue is full, retry later")
+
+	_, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse",
+		map[string]any{"requestBody": map[string]any{}},
+		map[string]any{"statusCode": 401, "body": "unauthorized"})
+	require.ErrorContains(t, err, "HTTP 401")
 }
 
 func TestChatgpt2apiParseBatchResultMarksMissingAsFailure(t *testing.T) {
@@ -185,6 +198,15 @@ func TestChatgpt2apiParseBatchResultMarksMissingAsFailure(t *testing.T) {
 	assert.Equal(t, "FAILURE", byID["resp_gone"]["status"])
 	assert.Equal(t, "response not found or expired", byID["resp_gone"]["reason"])
 
+	// An upstream error reply (400 too_many_ids, 401, ...) must surface as a
+	// hook error so the poller counts it; an empty list would stall every task.
+	_, err = plugin.Engine.Call(t.Context(), "parseBatchResult", ctx,
+		map[string]any{"error": map[string]any{"code": "too_many_ids", "message": "at most 1000 ids per request"}},
+		map[string]any{"status": 400, "headers": map[string]any{}})
+	require.ErrorContains(t, err, "too_many_ids")
+	_, err = plugin.Engine.Call(t.Context(), "parseBatchResult", ctx, "gateway timeout", map[string]any{"status": 504})
+	require.ErrorContains(t, err, "HTTP 504")
+
 	value, err = plugin.Engine.Call(t.Context(), "buildQueryRequest", map[string]any{"baseUrl": "http://chatgpt2api-lb", "apiKey": "sk-channel", "taskId": "resp_done"})
 	require.NoError(t, err)
 	assert.Equal(t, []any{"resp_done"}, chatgpt2apiJSON(t, value)["body"].(map[string]any)["ids"])
@@ -218,7 +240,7 @@ func TestChatgpt2apiUsageOnCompleteCountsCompletedItems(t *testing.T) {
 	assert.Equal(t, map[string]any{"image_count": float64(0)}, chatgpt2apiJSON(t, value))
 }
 
-func TestChatgpt2apiRejectsSyncForm(t *testing.T) {
+func TestChatgpt2apiClaimsOnlyBackgroundAliases(t *testing.T) {
 	registry, plugin := loadChatgpt2apiPlugin(t)
 	assert.True(t, plugin.Meta.ProtocolSupports("openai_responses", "background"))
 	assert.False(t, plugin.Meta.ProtocolSupports("openai_responses", "sync"))
