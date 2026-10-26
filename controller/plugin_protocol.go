@@ -715,7 +715,7 @@ func waitTaskPluginProtocol(
 			}
 			if c.Request.Context().Err() == nil {
 				logger.LogDebug(c, "task_plugin subsystem=protocol event=observation_failed generation=%d plugin=%q mode=nonstream stage=load reason=task_unavailable", generation, pluginKey)
-				writeTaskPluginProtocolFailureResponse(c, machine, lastStatus)
+				writeTaskPluginProtocolFailureResponse(c, machine, lastStatus, "")
 			} else {
 				logger.LogDebug(c, "task_plugin subsystem=protocol event=client_disconnected generation=%d plugin=%q mode=nonstream stage=load", generation, pluginKey)
 			}
@@ -749,7 +749,7 @@ func waitTaskPluginProtocol(
 		}
 		if !loadOverloaded && (task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure) {
 			if task.Status == model.TaskStatusFailure {
-				writeTaskPluginProtocolFailureResponse(c, machine, string(task.Status))
+				writeTaskPluginProtocolFailureResponse(c, machine, string(task.Status), task.FailReason)
 				return
 			}
 			response, hookElapsed, callErr := renderTaskPluginProtocolFinalResponse(
@@ -786,7 +786,7 @@ func waitTaskPluginProtocol(
 						pluginKey,
 						hookElapsed.Milliseconds(),
 					)
-					writeTaskPluginProtocolFailureResponse(c, machine, lastStatus)
+					writeTaskPluginProtocolFailureResponse(c, machine, lastStatus, "")
 					return
 				}
 			} else {
@@ -1036,7 +1036,7 @@ func retrieveTaskPluginResponse(c *gin.Context, deps pluginProtocolBridgeDeps) {
 
 	if task.Status == model.TaskStatusFailure {
 		logger.LogDebug(c, "task_plugin subsystem=protocol event=retrieve_final generation=%d plugin=%q public_task_id=%q status=%q", generationNumber, plugin.Meta.Key, task.TaskID, taskPluginDebugStatus(string(task.Status)))
-		writeTaskPluginProtocolFailureResponse(c, machine, string(task.Status))
+		writeTaskPluginProtocolFailureResponse(c, machine, string(task.Status), task.FailReason)
 		return
 	}
 	if task.Status != model.TaskStatusSuccess {
@@ -1079,7 +1079,7 @@ func retrieveTaskPluginResponse(c *gin.Context, deps pluginProtocolBridgeDeps) {
 			task.TaskID,
 			hookElapsed.Milliseconds(),
 		)
-		writeTaskPluginProtocolFailureResponse(c, machine, string(task.Status))
+		writeTaskPluginProtocolFailureResponse(c, machine, string(task.Status), task.FailReason)
 		return
 	}
 	logger.LogDebug(
@@ -1136,9 +1136,10 @@ func writeTaskPluginProtocolFailureResponse(
 	c *gin.Context,
 	machine *relay.PluginResponsesMachine,
 	taskStatus string,
+	failReason string,
 ) {
 	if taskStatus == string(model.TaskStatusFailure) {
-		response, err := machine.FinalResponse(nil, taskStatus)
+		response, err := machine.FinalFailureResponse(failReason)
 		if err != nil {
 			logger.LogError(c, common.LogText("task protocol terminal failure response failed: %s", err.Error()))
 			respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")

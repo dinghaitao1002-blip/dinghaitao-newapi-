@@ -584,20 +584,34 @@ func (m *PluginResponsesMachine) FinalResponse(payload any, taskStatus string) (
 		m.terminal = true
 		return response, nil
 	case "FAILURE":
-		m.status = pluginResponseStatusFailed
-		m.metadata["task_status"] = pluginResponseStatusFailed
+		return m.FinalFailureResponse("")
 	default:
 		return nil, errors.New("final response requires a terminal task")
 	}
-	m.terminal = true
-	response, err := pluginResponseMap(m.responseSnapshot(&dto.PluginResponsesError{
-		Code:    "server_error",
-		Message: "The task failed.",
-	}))
-	if err != nil {
-		return nil, err
+}
+
+// FinalFailureResponse builds the non-stream envelope for a task that ended
+// in FAILURE. reason is the task's fail_reason as the plugin or the poller
+// wrote it: trimmed, truncated to MaxMessageBytes, and replaced by the
+// generic message when empty. The code stays server_error.
+func (m *PluginResponsesMachine) FinalFailureResponse(reason string) (map[string]any, error) {
+	if m.started || m.terminal {
+		return nil, errors.New("response state machine has already started")
 	}
-	return response, nil
+	m.status = pluginResponseStatusFailed
+	m.metadata["task_status"] = pluginResponseStatusFailed
+	m.terminal = true
+	message := strings.TrimSpace(reason)
+	if len(message) > m.limits.MaxMessageBytes {
+		message = message[:m.limits.MaxMessageBytes]
+	}
+	if message == "" {
+		message = "The task failed."
+	}
+	return pluginResponseMap(m.responseSnapshot(&dto.PluginResponsesError{
+		Code:    "server_error",
+		Message: message,
+	}))
 }
 
 // FinalFromEvents synthesizes the retrieval Response for stream-only plugins

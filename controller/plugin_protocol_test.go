@@ -848,7 +848,7 @@ func TestServeTaskPluginProtocolNonStreamTaskFailureSkipsFinalHook(t *testing.T)
 			Platform:   constant.TaskPlatform(pinned.Plugin.Meta.Key),
 			UserId:     71,
 			Status:     model.TaskStatusFailure,
-			FailReason: "upstream credential at https://secret.invalid/",
+			FailReason: "image generation failed: content policy",
 		}
 		task.SetData(map[string]any{"secret": "database-secret"})
 		return task, true, nil
@@ -862,7 +862,7 @@ func TestServeTaskPluginProtocolNonStreamTaskFailureSkipsFinalHook(t *testing.T)
 	assert.Equal(t, "failed", response.Status)
 	require.NotNil(t, response.Error)
 	assert.Equal(t, "server_error", response.Error.Code)
-	assert.Equal(t, "The task failed.", response.Error.Message)
+	assert.Equal(t, "image generation failed: content policy", response.Error.Message)
 	assert.Empty(t, response.Output)
 	assert.NotContains(t, recorder.Body.String(), "secret")
 	assert.NotContains(t, recorder.Body.String(), "credential")
@@ -1417,6 +1417,7 @@ func TestRetrieveTaskPluginResponseFailureUsesFailedEnvelope(t *testing.T) {
 		Platform:   constant.TaskPlatform(pinned.Plugin.Meta.Key),
 		UserId:     71,
 		Status:     model.TaskStatusFailure,
+		FailReason: "response not found or expired",
 		Properties: model.Properties{OriginModelName: "video-model"},
 	}, true, nil)
 
@@ -1429,7 +1430,7 @@ func TestRetrieveTaskPluginResponseFailureUsesFailedEnvelope(t *testing.T) {
 	assert.Equal(t, "failed", response.Status)
 	require.NotNil(t, response.Error)
 	assert.Equal(t, "server_error", response.Error.Code)
-	assert.Equal(t, "The task failed.", response.Error.Message)
+	assert.Equal(t, "response not found or expired", response.Error.Message)
 }
 
 func TestRetrieveTaskPluginResponseNotFound(t *testing.T) {

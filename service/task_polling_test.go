@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -875,9 +876,21 @@ func TestUpdateVideoSingleTaskPollClassification(t *testing.T) {
 		wantFailures  int
 		wantRefund    bool
 		wantReason    string
+		wantReasonNot string
 		wantState     string
 		wantUnchanged bool
 	}{
+		{
+			name:          "transport error at threshold keeps the upstream address out of fail_reason",
+			fetchErr:      errors.New(`Post "http://chatgpt2api-lb/v1/responses/batch": dial tcp: connection refused`),
+			priorFailures: 2,
+			maxFailures:   3,
+			wantStatus:    model.TaskStatusFailure,
+			wantFailures:  3,
+			wantRefund:    true,
+			wantReason:    "Failed to query the upstream task status",
+			wantReasonNot: "chatgpt2api-lb",
+		},
 		{
 			name:          "404 fails immediately and refunds",
 			statusCode:    http.StatusNotFound,
@@ -986,6 +999,9 @@ func TestUpdateVideoSingleTaskPollClassification(t *testing.T) {
 			}
 			if testCase.wantReason != "" {
 				assert.Equal(t, testCase.wantReason, persisted.FailReason)
+			}
+			if testCase.wantReasonNot != "" {
+				assert.NotContains(t, persisted.FailReason, testCase.wantReasonNot)
 			}
 			if testCase.wantState != "" {
 				assert.JSONEq(t, testCase.wantState, string(persisted.PrivateData.PluginState))

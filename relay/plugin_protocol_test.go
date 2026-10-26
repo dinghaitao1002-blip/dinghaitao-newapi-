@@ -632,3 +632,24 @@ func TestInlinePluginImageResults(t *testing.T) {
 	require.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "https://x/fail.png")
 }
+
+func TestFailureEnvelopeCarriesTruncatedFailReason(t *testing.T) {
+	limits := DefaultPluginProtocolLimits()
+	limits.MaxMessageBytes = 8
+	machine := NewPluginResponsesMachine("task_1", "m", 1, limits)
+	response, err := machine.FinalFailureResponse("image generation failed: content policy")
+	require.NoError(t, err)
+	assert.Equal(t, "failed", response["status"])
+	errObj, ok := response["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "server_error", errObj["code"])
+	assert.Equal(t, "image ge", errObj["message"])
+
+	response, err = NewPluginResponsesMachine("task_2", "m", 1, limits).FinalFailureResponse("   ")
+	require.NoError(t, err)
+	assert.Equal(t, "The task failed.", response["error"].(map[string]any)["message"])
+
+	response, err = NewPluginResponsesMachine("task_3", "m", 1, limits).FinalResponse(nil, "FAILURE")
+	require.NoError(t, err)
+	assert.Equal(t, "The task failed.", response["error"].(map[string]any)["message"])
+}
