@@ -13,10 +13,13 @@
 // Pricing note for operators: because the plugin declares these model names,
 // the host treats them as task models wherever pricing is validated. A legacy
 // per-call price (ModelPrice) keeps working on both the relay and the plugin
-// path; a model-level billing expression must evaluate against this plugin's
-// usage schema (`image_count`; `fixed()` is rejected for task models), or a
-// `chatgpt2api` provider variant must be configured, and the automatic
-// legacy-to-expression conversion preview declines these models.
+// path. A model-level billing expression prices the relayed (synchronous)
+// path, so it may keep a `fixed()` request price; the background path is
+// priced by the `chatgpt2api` provider variant (a usage expression over
+// `image_count`, e.g. `u("image_count") * 0.01`), which the model pricing
+// editor offers as a provider tab because this claim relays unsupported
+// forms. The automatic legacy-to-expression conversion preview declines
+// these models.
 // The delivery form is decided at submit time from the image_generation tool's
 // `response_format` (url by default, b64_json on request) and travels with the
 // task; chatgpt2api echoes it in the terminal Response's

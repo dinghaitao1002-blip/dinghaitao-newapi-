@@ -494,6 +494,24 @@ func (g *RoutingGeneration) SharedModel(model string) bool {
 	return g != nil && len(g.modelPlugins[model]) >= 2
 }
 
+// RelaySharedModel reports whether a plugin declaring model relays the
+// request forms it does not support (unsupported: "relay"), so ordinary
+// channels serve the same model name alongside the plugin and the two paths
+// need separate pricing.
+func (g *RoutingGeneration) RelaySharedModel(model string) bool {
+	if g == nil {
+		return false
+	}
+	for _, plugin := range g.modelPlugins[model] {
+		for _, claim := range plugin.Meta.Protocols {
+			if claim.Unsupported == UnsupportedFormRelay {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // CanonicalModel returns the declared spelling for model. An exact byModel
 // hit wins and returns the input unchanged; otherwise the ASCII-folded
 // index is consulted. Miss and nil-receiver return ("", false).
