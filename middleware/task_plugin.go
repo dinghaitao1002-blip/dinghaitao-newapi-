@@ -451,14 +451,6 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if claimedModel != pinnedEndpoint.Model {
-			if rewriteErr := rewriteTaskPluginJSONModel(c, pinnedEndpoint.Model); rewriteErr != nil {
-				abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid task protocol request")
-				return
-			}
-		}
-		modelRequest.Model = pinnedEndpoint.Model
-		c.Set(contextKeyTaskPluginEndpointModel, *modelRequest)
 		candidates := pinnedEndpoint.Candidates
 		binding := candidates[0]
 		if definition, known := pluginruntime.HostProtocol(binding.Protocol); known && len(definition.DefinedModes()) > 0 {
@@ -494,7 +486,7 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 				if protocolCandidatesRelayUnsupported(unfiltered, binding.Protocol) {
 					// Every claimant sends this form to the ordinary relay: leave the
 					// request unpinned, exactly as for an unclaimed model.
-					logger.LogDebug(c, "task_plugin subsystem=endpoint event=relay_fallthrough generation=%d protocol=%q model=%q stream=%t background=%t", generation.Number, binding.Protocol, pinModel, stream, background)
+					logger.LogDebug(c, "task_plugin subsystem=endpoint event=relay_fallthrough generation=%d protocol=%q model=%q stream=%t background=%t", generation.Number, binding.Protocol, pinnedEndpoint.Model, stream, background)
 					c.Set(contextKeyTaskPluginEndpointModel, *modelRequest)
 					c.Next()
 					return
@@ -505,6 +497,17 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 			candidates = filtered
 			binding = candidates[0]
 		}
+
+		// Only a pinned request is normalized to the declared spelling; a
+		// request that fell through above keeps the client's body and model.
+		if claimedModel != pinnedEndpoint.Model {
+			if rewriteErr := rewriteTaskPluginJSONModel(c, pinnedEndpoint.Model); rewriteErr != nil {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid task protocol request")
+				return
+			}
+		}
+		modelRequest.Model = pinnedEndpoint.Model
+		c.Set(contextKeyTaskPluginEndpointModel, *modelRequest)
 
 		pin := pluginruntime.PinnedPlugin{Generation: generation, Plugin: binding.Plugin}
 		pinnedEndpoint.Plugin = binding.Plugin

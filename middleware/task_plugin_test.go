@@ -1725,6 +1725,9 @@ func TestPinTaskPluginEndpointRejectsUnsupportedRequestForms(t *testing.T) {
 		body     string
 		message  string
 		relay    bool
+		// rejectingKey registers a second claimant of the same model that keeps
+		// the default reject policy for the forms it does not support.
+		rejectingKey string
 	}{
 		{
 			name:     "sync falls through to the relay when the claim declares unsupported relay",
@@ -1733,6 +1736,23 @@ func TestPinTaskPluginEndpointRejectsUnsupportedRequestForms(t *testing.T) {
 			hooks:    `renderFinal: function() { return {}; }`,
 			body:     `{"model":"form-gate-model","background":false}`,
 			relay:    true,
+		},
+		{
+			name:     "fall-through keeps the client's model spelling",
+			key:      "form-gate-relay-spelling",
+			supports: `["background"], unsupported: "relay"`,
+			hooks:    `renderFinal: function() { return {}; }`,
+			body:     `{"model":"Form-Gate-Model","input":"x"}`,
+			relay:    true,
+		},
+		{
+			name:         "a rejecting co-claimant keeps the 400",
+			key:          "form-gate-relay-mixed",
+			supports:     `["background"], unsupported: "relay"`,
+			hooks:        `renderFinal: function() { return {}; }`,
+			body:         `{"model":"form-gate-model","stream":true}`,
+			message:      `Streaming is not supported for this model.`,
+			rejectingKey: "form-gate-mixed-reject",
 		},
 		{
 			name:     "stream falls through to the relay when the claim declares unsupported relay",
@@ -1790,15 +1810,30 @@ func TestPinTaskPluginEndpointRejectsUnsupportedRequestForms(t *testing.T) {
 			), jsplugin.Options{})
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, jsplugin.DefaultRegistry.Unregister(testCase.key)) })
+			if testCase.rejectingKey != "" {
+				_, err := jsplugin.DefaultRegistry.Register(taskResponsesPluginSource(
+					testCase.rejectingKey, 0, `["form-gate-model"]`, `["sync"]`, `renderFinal: function() { return {}; }`, `return {model: ctx.model};`,
+				), jsplugin.Options{})
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, jsplugin.DefaultRegistry.Unregister(testCase.rejectingKey)) })
+			}
 
 			reachedPrepare := false
 			quotaConsumed := false
 			pinned := false
+			relayedBody := ""
+			relayedModel := ""
 			router := gin.New()
 			router.POST("/v1/responses", PinTaskPluginEndpoint(), PrepareTaskPluginEndpoint(), func(c *gin.Context) {
 				reachedPrepare = true
 				_, pinned = c.Get(jsplugin.ContextKeyPinnedEndpoint)
 				if testCase.relay {
+					raw, readErr := io.ReadAll(c.Request.Body)
+					require.NoError(t, readErr)
+					relayedBody = string(raw)
+					if cached, exists := c.Get(contextKeyTaskPluginEndpointModel); exists {
+						relayedModel = cached.(ModelRequest).Model
+					}
 					c.Status(http.StatusNoContent)
 					return
 				}
@@ -1817,6 +1852,10 @@ func TestPinTaskPluginEndpointRejectsUnsupportedRequestForms(t *testing.T) {
 				assert.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
 				assert.True(t, reachedPrepare)
 				assert.False(t, pinned)
+				assert.Equal(t, testCase.body, relayedBody)
+				var sent map[string]any
+				require.NoError(t, common.Unmarshal([]byte(testCase.body), &sent))
+				assert.Equal(t, sent["model"], relayedModel)
 				return
 			}
 			assert.Equal(t, http.StatusBadRequest, recorder.Code)

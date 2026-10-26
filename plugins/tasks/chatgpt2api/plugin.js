@@ -10,6 +10,13 @@
 // (`unsupported: "relay"`): a request without `background: true`, or with
 // `stream: true`, falls through to the gateway's ordinary relay channel for
 // the same model, so existing synchronous callers are unaffected.
+// Pricing note for operators: because the plugin declares these model names,
+// the host treats them as task models wherever pricing is validated. A legacy
+// per-call price (ModelPrice) keeps working on both the relay and the plugin
+// path; a model-level billing expression must evaluate against this plugin's
+// usage schema (`image_count`; `fixed()` is rejected for task models), or a
+// `chatgpt2api` provider variant must be configured, and the automatic
+// legacy-to-expression conversion preview declines these models.
 // The delivery form is decided at submit time from the image_generation tool's
 // `response_format` (url by default, b64_json on request) and travels with the
 // task; chatgpt2api echoes it in the terminal Response's
