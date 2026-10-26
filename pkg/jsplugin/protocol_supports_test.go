@@ -54,6 +54,18 @@ func TestProtocolSupportsLoadErrors(t *testing.T) {
 			err:       `plugin acme protocol "openai_responses" must declare supports; add supports: [...] choosing from "stream", "sync", "background"`,
 		},
 		{
+			name:      "unsupported with an unknown policy",
+			protocols: `[{name: "openai_responses", supports: ["background"], unsupported: "drop"}]`,
+			exports:   responsesDecodeFinal,
+			err:       `plugin acme protocol "openai_responses" unsupported must be "reject" or "relay"`,
+		},
+		{
+			name:      "unsupported on a protocol without modes",
+			protocols: `[{name: "openai_video", unsupported: "relay"}]`,
+			exports:   videoProtocolExport,
+			err:       `plugin acme protocol "openai_video" does not define modes; unsupported is not allowed`,
+		},
+		{
 			name:      "supports sync but only renderEvents",
 			protocols: `[{name: "openai_responses", supports: ["sync"]}]`,
 			exports:   responsesDecodeEvents,
@@ -148,6 +160,15 @@ func TestProtocolSupportsHappyPaths(t *testing.T) {
 			exports:   responsesDecodeBoth,
 			wantProtocols: []ProtocolClaim{
 				{Name: "openai_responses", Supports: []string{"stream", "sync", "background"}, objectForm: true},
+			},
+		},
+		{
+			name:      "background only with relay fallthrough for the other forms",
+			models:    `["model"]`,
+			protocols: `[{name: "openai_responses", supports: ["background"], unsupported: "relay"}]`,
+			exports:   responsesDecodeFinal,
+			wantProtocols: []ProtocolClaim{
+				{Name: "openai_responses", Supports: []string{"background"}, Unsupported: "relay", objectForm: true},
 			},
 		},
 		{

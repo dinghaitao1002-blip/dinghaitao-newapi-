@@ -41,7 +41,7 @@ func chatgpt2apiJSONList(t *testing.T, value any) []map[string]any {
 func chatgpt2apiDecode(t *testing.T, plugin *jsplugin.LoadedPlugin, body map[string]any) (map[string]any, error) {
 	t.Helper()
 	value, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_responses", "decodeRequest"}, map[string]any{
-		"model": "gpt-image-2-background", "upstreamModel": "gpt-image-2-background", "stream": false,
+		"model": "gpt-image-2", "upstreamModel": "gpt-image-2", "stream": false,
 		"body": map[string]any{"kind": "json", "value": body},
 	})
 	if err != nil {
@@ -53,22 +53,22 @@ func chatgpt2apiDecode(t *testing.T, plugin *jsplugin.LoadedPlugin, body map[str
 func TestChatgpt2apiDecodeRequiresImageTool(t *testing.T) {
 	_, plugin := loadChatgpt2apiPlugin(t)
 
-	_, err := chatgpt2apiDecode(t, plugin, map[string]any{"model": "gpt-image-2-background", "input": "a red apple"})
+	_, err := chatgpt2apiDecode(t, plugin, map[string]any{"model": "gpt-image-2", "input": "a red apple"})
 	require.ErrorContains(t, err, "image_generation")
 
 	_, err = chatgpt2apiDecode(t, plugin, map[string]any{
-		"model": "gpt-image-2-background", "input": "a red apple",
+		"model": "gpt-image-2", "input": "a red apple",
 		"tools": []any{map[string]any{"type": "image_generation", "response_format": "jpeg"}},
 	})
 	require.ErrorContains(t, err, "response_format")
 
 	decoded, err := chatgpt2apiDecode(t, plugin, map[string]any{
-		"model": "gpt-image-2-background", "input": "a red apple", "instructions": "photo",
+		"model": "gpt-image-2", "input": "a red apple", "instructions": "photo",
 		"tools": []any{map[string]any{"type": "image_generation", "size": "1024x1536", "response_format": "b64_json"}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "submit", decoded["kind"])
-	assert.Equal(t, "gpt-image-2-background", decoded["model"])
+	assert.Equal(t, "gpt-image-2", decoded["model"])
 	assert.Equal(t, "image", decoded["action"])
 	requestBody := decoded["requestBody"].(map[string]any)
 	assert.Equal(t, "b64_json", requestBody["response_format"])
@@ -76,7 +76,7 @@ func TestChatgpt2apiDecodeRequiresImageTool(t *testing.T) {
 	assert.Equal(t, "a red apple", requestBody["input"])
 
 	decoded, err = chatgpt2apiDecode(t, plugin, map[string]any{
-		"model": "gpt-image-2-background", "input": "a red apple",
+		"model": "gpt-image-2", "input": "a red apple",
 		"tools": []any{map[string]any{"type": "image_generation"}},
 	})
 	require.NoError(t, err)
@@ -86,12 +86,12 @@ func TestChatgpt2apiDecodeRequiresImageTool(t *testing.T) {
 func TestChatgpt2apiBuildSubmitForcesBackgroundAndForwardsSizeFit(t *testing.T) {
 	_, plugin := loadChatgpt2apiPlugin(t)
 	requestBody := map[string]any{
-		"model": "gpt-image-2-background", "input": "a red apple", "response_format": "url",
+		"model": "gpt-image-2", "input": "a red apple", "response_format": "url",
 		"tools": []any{map[string]any{"type": "image_generation", "size": "1024x1536"}},
 	}
 	value, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
 		"baseUrl": "http://chatgpt2api-lb", "apiKey": "sk-channel", "action": "image",
-		"model": "gpt-image-2-background", "upstreamModel": "gpt-image-2-background",
+		"model": "gpt-image-2", "upstreamModel": "gpt-image-2",
 		"requestBody": requestBody, "requestHeaders": map[string]any{"Content-Type": "application/json", "X-Size-Fit": "crop"},
 	})
 	require.NoError(t, err)
@@ -103,7 +103,7 @@ func TestChatgpt2apiBuildSubmitForcesBackgroundAndForwardsSizeFit(t *testing.T) 
 	assert.Equal(t, "crop", headers["X-Size-Fit"])
 	body := descriptor["body"].(map[string]any)
 	assert.Equal(t, true, body["background"])
-	assert.Equal(t, "gpt-image-2-background", body["model"])
+	assert.Equal(t, "gpt-image-2", body["model"])
 	_, hasStream := body["stream"]
 	assert.False(t, hasStream)
 	_, hasFormat := body["response_format"]
@@ -114,7 +114,7 @@ func TestChatgpt2apiBuildSubmitForcesBackgroundAndForwardsSizeFit(t *testing.T) 
 
 	value, err = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
 		"baseUrl": "http://chatgpt2api-lb", "apiKey": "sk-channel", "action": "image",
-		"model": "gpt-image-2-background", "upstreamModel": "gpt-image-2-background",
+		"model": "gpt-image-2", "upstreamModel": "gpt-image-2",
 		"requestBody": requestBody, "requestHeaders": map[string]any{},
 	})
 	require.NoError(t, err)
@@ -240,20 +240,25 @@ func TestChatgpt2apiUsageOnCompleteCountsCompletedItems(t *testing.T) {
 	assert.Equal(t, map[string]any{"image_count": float64(0)}, chatgpt2apiJSON(t, value))
 }
 
-func TestChatgpt2apiClaimsOnlyBackgroundAliases(t *testing.T) {
+func TestChatgpt2apiClaimsPlainModelsBackgroundOnly(t *testing.T) {
 	registry, plugin := loadChatgpt2apiPlugin(t)
 	assert.True(t, plugin.Meta.ProtocolSupports("openai_responses", "background"))
 	assert.False(t, plugin.Meta.ProtocolSupports("openai_responses", "sync"))
 	assert.False(t, plugin.Meta.ProtocolSupports("openai_responses", "stream"))
-	assert.Contains(t, plugin.Meta.Models, "gpt-image-2-background")
+	require.Len(t, plugin.Meta.Protocols, 1)
+	assert.Equal(t, "relay", plugin.Meta.Protocols[0].Unsupported, "sync and stream requests keep their relay channel")
+	assert.ElementsMatch(t, []string{
+		"gpt-image-2", "gpt-image-auto", "codex-gpt-image-2",
+		"plus-codex-gpt-image-2", "team-codex-gpt-image-2", "pro-codex-gpt-image-2",
+		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+	}, plugin.Meta.Models)
 	for _, model := range plugin.Meta.Models {
-		assert.True(t, len(model) > len("-background") && model[len(model)-len("-background"):] == "-background", model)
 		binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
 		require.True(t, claimed, model)
 		assert.Same(t, plugin, binding.Plugin)
 	}
-	_, claimed := registry.Generation().LookupEndpoint("POST", "/v1/responses", "gpt-image-2")
-	assert.False(t, claimed, "the plain model name stays on the relay path")
+	_, claimed := registry.Generation().LookupEndpoint("POST", "/v1/responses", "gpt-image-2-background")
+	assert.False(t, claimed, "the alias is a chatgpt2api direct-call convenience, not a gateway model")
 	assert.Equal(t, "batch", string(plugin.Meta.FetchMode))
 	schema, ok := plugin.Meta.UsageSchema["image_count"]
 	require.True(t, ok)
@@ -265,7 +270,7 @@ func TestChatgpt2apiRenderFinalPassesHint(t *testing.T) {
 	_, plugin := loadChatgpt2apiPlugin(t)
 	output := []any{map[string]any{"type": "image_generation_call", "status": "completed", "result": nil, "url": "https://img.example/a.png"}}
 	value, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_responses", "renderFinal"},
-		map[string]any{"requestBody": map[string]any{"model": "gpt-image-2-background"}},
+		map[string]any{"requestBody": map[string]any{"model": "gpt-image-2"}},
 		map[string]any{"task_id": "task_public", "status": "SUCCESS", "data": map[string]any{
 			"id": "resp_done", "status": "completed", "output": output, "metadata": map[string]any{"response_format": "b64_json"},
 		}})
@@ -275,7 +280,7 @@ func TestChatgpt2apiRenderFinalPassesHint(t *testing.T) {
 	assert.Equal(t, output, payload["output"])
 
 	value, err = plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_responses", "renderFinal"},
-		map[string]any{"requestBody": map[string]any{"model": "gpt-image-2-background"}},
+		map[string]any{"requestBody": map[string]any{"model": "gpt-image-2"}},
 		map[string]any{"task_id": "task_public", "status": "SUCCESS", "data": map[string]any{"id": "resp_done", "status": "completed", "output": output}})
 	require.NoError(t, err)
 	assert.Equal(t, "url", chatgpt2apiJSON(t, value)["image_response_format"])

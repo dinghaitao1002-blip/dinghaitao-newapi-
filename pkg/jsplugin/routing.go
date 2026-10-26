@@ -47,11 +47,20 @@ type Route struct {
 // Supports names the request forms a mode-bearing protocol accepts; decode
 // and normalize rewrite it into host-table order.
 type ProtocolClaim struct {
-	Name       string   `json:"name"`
-	Models     []string `json:"models,omitempty"`
-	Supports   []string `json:"supports,omitempty"`
-	objectForm bool
+	Name     string   `json:"name"`
+	Models   []string `json:"models,omitempty"`
+	Supports []string `json:"supports,omitempty"`
+	// Unsupported is what the host does with a request form outside Supports:
+	// "reject" (default, 400 at channel selection) or "relay" (fall through to
+	// the built-in relay as an unclaimed model would).
+	Unsupported string `json:"unsupported,omitempty"`
+	objectForm  bool
 }
+
+const (
+	UnsupportedFormReject = "reject"
+	UnsupportedFormRelay  = "relay"
+)
 
 // ProtocolMode is one client request form a host protocol operation accepts
 // and the plugin hook that implements it.

@@ -6,8 +6,10 @@
 //   POST {baseUrl}/v1/responses/batch  body {ids: [...]} (at most 1000)
 //                                      -> {data: [Response, ...], missing_ids: [...]}
 //
-// The plugin claims only the `<model>-background` aliases, so the plain model
-// names keep their synchronous and streaming relay path on the gateway.
+// The plugin claims the plain image model names for the background form only
+// (`unsupported: "relay"`): a request without `background: true`, or with
+// `stream: true`, falls through to the gateway's ordinary relay channel for
+// the same model, so existing synchronous callers are unaffected.
 // The delivery form is decided at submit time from the image_generation tool's
 // `response_format` (url by default, b64_json on request) and travels with the
 // task; chatgpt2api echoes it in the terminal Response's
@@ -38,9 +40,7 @@ export const meta = {
     en: "Background image generation through a chatgpt2api gateway",
     zh: "通过 chatgpt2api 后台生图",
   },
-  models: IMAGE_MODELS.map(function (model) {
-    return model + "-background";
-  }),
+  models: IMAGE_MODELS,
   fetchMode: "batch",
   upstreams: ["vendor"],
   usageSchema: {
@@ -54,9 +54,9 @@ export const meta = {
     },
   },
   usageExamples: [{ label: "1 image", facts: { image_count: 1 } }],
-  // Only the background form: a request without `background: true` on an
-  // alias model is rejected by the host before any hook runs.
-  protocols: [{ name: "openai_responses", supports: ["background"] }],
+  // Only the background form; every other form of these models stays on the
+  // ordinary relay (see the comment at the top).
+  protocols: [{ name: "openai_responses", supports: ["background"], unsupported: "relay" }],
 };
 
 const STATUS_MAP = { queued: "QUEUED", in_progress: "IN_PROGRESS", completed: "SUCCESS", failed: "FAILURE" };

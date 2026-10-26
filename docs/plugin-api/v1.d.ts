@@ -44,7 +44,7 @@ export type ResponsesMode = "stream" | "sync" | "background";
 export type ProtocolClaim =
   | "openai_video"
   | "openai_image"
-  | {name: "openai_responses"; supports: readonly ResponsesMode[]; models?: readonly string[]}
+  | {name: "openai_responses"; supports: readonly ResponsesMode[]; unsupported?: "reject" | "relay"; models?: readonly string[]}
   | {name: "openai_video"; models?: readonly string[]}
   | {name: "openai_image"; models?: readonly string[]};
 /** One entry of the OpenAI ImageResponse `data` array rendered by protocols.openai_image.render. */

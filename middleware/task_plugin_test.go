@@ -1724,7 +1724,24 @@ func TestPinTaskPluginEndpointRejectsUnsupportedRequestForms(t *testing.T) {
 		hooks    string
 		body     string
 		message  string
+		relay    bool
 	}{
+		{
+			name:     "sync falls through to the relay when the claim declares unsupported relay",
+			key:      "form-gate-relay-sync",
+			supports: `["background"], unsupported: "relay"`,
+			hooks:    `renderFinal: function() { return {}; }`,
+			body:     `{"model":"form-gate-model","background":false}`,
+			relay:    true,
+		},
+		{
+			name:     "stream falls through to the relay when the claim declares unsupported relay",
+			key:      "form-gate-relay-stream",
+			supports: `["background"], unsupported: "relay"`,
+			hooks:    `renderFinal: function() { return {}; }`,
+			body:     `{"model":"form-gate-model","stream":true}`,
+			relay:    true,
+		},
 		{
 			name:     "stream against sync and background",
 			key:      "form-gate-final-only",
@@ -1776,9 +1793,15 @@ func TestPinTaskPluginEndpointRejectsUnsupportedRequestForms(t *testing.T) {
 
 			reachedPrepare := false
 			quotaConsumed := false
+			pinned := false
 			router := gin.New()
 			router.POST("/v1/responses", PinTaskPluginEndpoint(), PrepareTaskPluginEndpoint(), func(c *gin.Context) {
 				reachedPrepare = true
+				_, pinned = c.Get(jsplugin.ContextKeyPinnedEndpoint)
+				if testCase.relay {
+					c.Status(http.StatusNoContent)
+					return
+				}
 				quotaConsumed = true
 				require.NoError(t, model.DB.Create(&model.Task{TaskID: "should-not-exist", UserId: 1}).Error)
 				c.Status(http.StatusNoContent)
@@ -1788,6 +1811,14 @@ func TestPinTaskPluginEndpointRejectsUnsupportedRequestForms(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, request)
 
+			if testCase.relay {
+				// The ordinary relay handler runs next with the body untouched and
+				// no plugin pinned, exactly as for an unclaimed model.
+				assert.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+				assert.True(t, reachedPrepare)
+				assert.False(t, pinned)
+				return
+			}
 			assert.Equal(t, http.StatusBadRequest, recorder.Code)
 			var payload map[string]any
 			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))

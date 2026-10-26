@@ -491,6 +491,14 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 				}
 			}
 			if len(filtered) == 0 {
+				if protocolCandidatesRelayUnsupported(unfiltered, binding.Protocol) {
+					// Every claimant sends this form to the ordinary relay: leave the
+					// request unpinned, exactly as for an unclaimed model.
+					logger.LogDebug(c, "task_plugin subsystem=endpoint event=relay_fallthrough generation=%d protocol=%q model=%q stream=%t background=%t", generation.Number, binding.Protocol, pinModel, stream, background)
+					c.Set(contextKeyTaskPluginEndpointModel, *modelRequest)
+					c.Next()
+					return
+				}
 				abortWithOpenAiMessage(c, http.StatusBadRequest, unsupportedProtocolFormMessage(unfiltered, binding.Protocol, stream, background))
 				return
 			}
@@ -517,6 +525,23 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 		)
 		c.Next()
 	}
+}
+
+// protocolCandidatesRelayUnsupported is true when every candidate plugin
+// declared unsupported: "relay" for the protocol; one rejecting claimant keeps
+// the documented 400.
+func protocolCandidatesRelayUnsupported(candidates []pluginruntime.ProtocolBinding, protocol string) bool {
+	seen := false
+	for _, candidate := range candidates {
+		if candidate.Plugin == nil {
+			continue
+		}
+		seen = true
+		if !candidate.Plugin.Meta.ProtocolRelaysUnsupported(protocol) {
+			return false
+		}
+	}
+	return seen
 }
 
 func jsonBodyBoolFlags(c *gin.Context) (stream, background bool) {

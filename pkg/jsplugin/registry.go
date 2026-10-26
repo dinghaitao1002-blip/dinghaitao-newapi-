@@ -185,6 +185,18 @@ func (m Meta) ProtocolSupports(protocol, mode string) bool {
 	return false
 }
 
+// ProtocolRelaysUnsupported reports whether the named protocol claim sends
+// request forms outside its supports to the built-in relay instead of
+// rejecting them.
+func (m Meta) ProtocolRelaysUnsupported(protocol string) bool {
+	for _, claim := range m.Protocols {
+		if claim.Name == protocol {
+			return claim.Unsupported == UnsupportedFormRelay
+		}
+	}
+	return false
+}
+
 // UsageExample is a display-only pricing sample: a labeled complete vector
 // over usageSchema. It never participates in billing.
 type UsageExample struct {
@@ -1401,8 +1413,13 @@ func normalizeV1Meta(meta *Meta) error {
 				}
 			}
 			claim.Supports = orderProtocolSupports(claim.Name, claim.Supports)
+			if claim.Unsupported != "" && claim.Unsupported != UnsupportedFormReject && claim.Unsupported != UnsupportedFormRelay {
+				return fmt.Errorf("plugin %s protocol %q unsupported must be %q or %q", meta.Key, claim.Name, UnsupportedFormReject, UnsupportedFormRelay)
+			}
 		} else if claim.Supports != nil {
 			return fmt.Errorf("plugin %s protocol %q does not define modes; supports is not allowed", meta.Key, claim.Name)
+		} else if claim.Unsupported != "" {
+			return fmt.Errorf("plugin %s protocol %q does not define modes; unsupported is not allowed", meta.Key, claim.Name)
 		}
 		if !known {
 			return fmt.Errorf("plugin meta protocol %q is unknown", claim.Name)
@@ -1856,7 +1873,7 @@ func decodeProtocolClaims(object map[string]any, name string) ([]ProtocolClaim, 
 		case map[string]any:
 			for key := range entry {
 				switch key {
-				case "name", "models", "supports":
+				case "name", "models", "supports", "unsupported":
 				default:
 					return nil, fmt.Errorf("plugin meta protocol %d has unknown field %q", index, key)
 				}
@@ -1879,6 +1896,11 @@ func decodeProtocolClaims(object map[string]any, name string) ([]ProtocolClaim, 
 					return nil, err
 				}
 				claim.Supports = orderProtocolSupports(claim.Name, claim.Supports)
+			}
+			if _, exists := entry["unsupported"]; exists {
+				if claim.Unsupported, err = stringMetaField(entry, "unsupported"); err != nil {
+					return nil, err
+				}
 			}
 			claims = append(claims, claim)
 		default:
