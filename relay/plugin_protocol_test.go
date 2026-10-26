@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -393,12 +394,40 @@ func TestPluginResponsesMachineNonStreamShapes(t *testing.T) {
 		assert.NotContains(t, string(encoded), "secret")
 	})
 
+	t.Run("image_generation_call items are accepted", func(t *testing.T) {
+		machine := NewPluginResponsesMachine("task_1", "gpt-image-2-background", 1, DefaultPluginProtocolLimits())
+		response, err := machine.FinalResponse(map[string]any{"output": []any{map[string]any{
+			"type": "image_generation_call", "status": "completed", "result": nil,
+			"url": "https://img.example/images/a.png", "revised_prompt": "cat", "output_format": "png",
+		}}}, "SUCCESS")
+		require.NoError(t, err)
+		item := response["output"].([]any)[0].(map[string]any)
+		assert.Equal(t, "ig_task_1_0", item["id"])
+		assert.Equal(t, "completed", item["status"])
+		assert.Equal(t, "https://img.example/images/a.png", item["url"])
+		assert.Nil(t, item["result"])
+		assert.Equal(t, "cat", item["revised_prompt"])
+		assert.Equal(t, "png", item["output_format"])
+	})
+
+	t.Run("image_generation_call without result or url is rejected", func(t *testing.T) {
+		machine := NewPluginResponsesMachine("task_1", "gpt-image-2-background", 1, DefaultPluginProtocolLimits())
+		_, err := machine.FinalResponse(map[string]any{"output": []any{map[string]any{
+			"type": "image_generation_call", "status": "completed", "result": nil, "url": nil,
+		}}}, "SUCCESS")
+		require.ErrorContains(t, err, "needs result or url")
+		_, err = machine.FinalResponse(map[string]any{"output": []any{map[string]any{
+			"type": "image_generation_call", "result": "QUJD",
+		}}}, "SUCCESS")
+		require.ErrorContains(t, err, "status")
+	})
+
 	t.Run("invalid output union is rejected", func(t *testing.T) {
 		machine := NewPluginResponsesMachine("task_invalid", "model", 99, PluginProtocolLimits{})
 		_, err := machine.FinalResponse(map[string]any{
 			"output": []any{map[string]any{}},
 		}, "SUCCESS")
-		require.ErrorContains(t, err, "message objects")
+		require.ErrorContains(t, err, "message or image_generation_call objects")
 	})
 
 	t.Run("poll timeout stays queued with retrieval path", func(t *testing.T) {
@@ -561,4 +590,45 @@ func TestPluginResponsesMachineFinalFromEvents(t *testing.T) {
 		_, err = machine.FinalFromEvents(ProtocolEventResult{}, "SUCCESS")
 		require.ErrorContains(t, err, "already started")
 	})
+}
+
+func TestExtractPluginImageResponseFormat(t *testing.T) {
+	format, stripped, err := ExtractPluginImageResponseFormat(map[string]any{"image_response_format": "b64_json", "output": []any{}})
+	require.NoError(t, err)
+	assert.Equal(t, "b64_json", format)
+	_, has := stripped.(map[string]any)["image_response_format"]
+	assert.False(t, has)
+
+	format, stripped, err = ExtractPluginImageResponseFormat(map[string]any{"output": []any{}})
+	require.NoError(t, err)
+	assert.Equal(t, "url", format)
+	assert.Equal(t, map[string]any{"output": []any{}}, stripped)
+
+	_, _, err = ExtractPluginImageResponseFormat(map[string]any{"image_response_format": "jpeg"})
+	assert.Error(t, err)
+}
+
+func TestInlinePluginImageResults(t *testing.T) {
+	response := map[string]any{"output": []any{
+		map[string]any{"type": "image_generation_call", "url": "https://x/a.png", "result": nil},
+		map[string]any{"type": "image_generation_call", "url": "https://x/fail.png", "result": nil},
+		map[string]any{"type": "message", "role": "assistant", "content": []any{}},
+	}}
+	warnings := make([]string, 0, 1)
+	InlinePluginImageResults(response, func(url string) (string, string, error) {
+		if strings.HasSuffix(url, "fail.png") {
+			return "", "", errors.New("download failed")
+		}
+		return "image/png", "UE5H", nil
+	}, func(message string) { warnings = append(warnings, message) })
+
+	output := response["output"].([]any)
+	inlined := output[0].(map[string]any)
+	assert.Equal(t, "UE5H", inlined["result"])
+	assert.Nil(t, inlined["url"])
+	kept := output[1].(map[string]any)
+	assert.Nil(t, kept["result"])
+	assert.Equal(t, "https://x/fail.png", kept["url"])
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "https://x/fail.png")
 }

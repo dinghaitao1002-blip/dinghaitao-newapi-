@@ -882,9 +882,20 @@ func renderTaskPluginProtocolFinalResponse(
 	if err != nil {
 		return nil, hookElapsed, err
 	}
+	imageFormat, payload, err := relay.ExtractPluginImageResponseFormat(payload)
+	if err != nil {
+		return nil, hookElapsed, err
+	}
 	response, err := machine.FinalResponse(payload, string(task.Status))
 	if err != nil {
 		return nil, hookElapsed, err
+	}
+	// Inline after canonicalization so the output size limit applies to the
+	// URL form the plugin returned, never to the downloaded bytes.
+	if imageFormat == "b64_json" && task.Status == model.TaskStatusSuccess {
+		relay.InlinePluginImageResults(response, deps.downloadImage, func(message string) {
+			logger.LogWarn(ctx, message)
+		})
 	}
 	return response, hookElapsed, nil
 }

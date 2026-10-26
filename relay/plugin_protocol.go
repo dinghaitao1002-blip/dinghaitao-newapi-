@@ -695,8 +695,14 @@ func (m *PluginResponsesMachine) canonicalFinalResponse(payload any) (map[string
 			return nil, errors.New("final response output items must be objects")
 		}
 		itemType, ok := item["type"].(string)
+		if ok && itemType == pluginImageGenerationCallType {
+			if err = canonicalImageGenerationCall(item, m.taskID, outputIndex); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if !ok || itemType != "message" {
-			return nil, errors.New("final response output items must be message objects")
+			return nil, errors.New("final response output items must be message or image_generation_call objects")
 		}
 		role, ok := item["role"].(string)
 		if !ok || role != "assistant" {
@@ -751,6 +757,116 @@ func (m *PluginResponsesMachine) canonicalFinalResponse(payload any) (map[string
 		return nil, err
 	}
 	return response, nil
+}
+
+// PluginImageResponseFormatHint is the top-level key a renderFinal payload may
+// carry to ask the host for the image delivery form: "url" (default) keeps
+// the vendor URLs, "b64_json" downloads each image_generation_call url into
+// result. The hint is stripped before canonicalization and never reaches
+// clients.
+const PluginImageResponseFormatHint = "image_response_format"
+
+const pluginImageGenerationCallType = "image_generation_call"
+
+// ExtractPluginImageResponseFormat removes PluginImageResponseFormatHint from
+// a map payload and returns the requested format with the stripped payload.
+// Non-map payloads pass through with the default format.
+func ExtractPluginImageResponseFormat(payload any) (string, any, error) {
+	response, ok := payload.(map[string]any)
+	if !ok {
+		return "url", payload, nil
+	}
+	rawHint, exists := response[PluginImageResponseFormatHint]
+	if !exists {
+		return "url", payload, nil
+	}
+	hint, ok := rawHint.(string)
+	if !ok || (hint != "url" && hint != "b64_json") {
+		return "", nil, fmt.Errorf("%s must be url or b64_json", PluginImageResponseFormatHint)
+	}
+	stripped := make(map[string]any, len(response))
+	maps.Copy(stripped, response)
+	delete(stripped, PluginImageResponseFormatHint)
+	return hint, stripped, nil
+}
+
+// InlinePluginImageResults fills result with downloaded base64 for every
+// image_generation_call item of a canonical final response that still carries
+// a url and no result. A failed download warns and leaves the item as is so
+// the client keeps the URL.
+func InlinePluginImageResults(response map[string]any, download func(url string) (string, string, error), warn func(string)) {
+	output, _ := response["output"].([]any)
+	for _, rawItem := range output {
+		item, ok := rawItem.(map[string]any)
+		if !ok || item["type"] != pluginImageGenerationCallType || item["result"] != nil {
+			continue
+		}
+		url, _ := item["url"].(string)
+		if url == "" {
+			continue
+		}
+		_, data, err := download(url)
+		if err != nil {
+			warn(fmt.Sprintf("image_generation_call base64 inline failed for %s: %v", url, err))
+			continue
+		}
+		item["result"] = data
+		item["url"] = nil
+	}
+}
+
+// canonicalImageGenerationCall validates one image_generation_call output
+// item in place. The host owns id and status; result (base64) and url are
+// each string or null and at least one must be present; revised_prompt and
+// output_format are optional strings.
+func canonicalImageGenerationCall(item map[string]any, taskID string, outputIndex int) error {
+	if _, ok := item["status"].(string); !ok {
+		return errors.New("final response image_generation_call status must be a string")
+	}
+	result, hasResult, err := optionalFinalResponseString(item, "result")
+	if err != nil {
+		return err
+	}
+	url, hasURL, err := optionalFinalResponseString(item, "url")
+	if err != nil {
+		return err
+	}
+	if !hasResult && !hasURL {
+		return errors.New("final response image_generation_call needs result or url")
+	}
+	if _, _, err = optionalFinalResponseString(item, "revised_prompt"); err != nil {
+		return err
+	}
+	if _, _, err = optionalFinalResponseString(item, "output_format"); err != nil {
+		return err
+	}
+	item["id"] = fmt.Sprintf("ig_%s_%d", taskID, outputIndex)
+	item["status"] = pluginResponseStatusCompleted
+	if !hasResult {
+		item["result"] = nil
+	} else {
+		item["result"] = result
+	}
+	if !hasURL {
+		item["url"] = nil
+	} else {
+		item["url"] = url
+	}
+	return nil
+}
+
+// optionalFinalResponseString reads a field that may be absent, null, or a
+// non-empty string; present reports a non-empty string.
+func optionalFinalResponseString(item map[string]any, field string) (string, bool, error) {
+	raw, exists := item[field]
+	if !exists || raw == nil {
+		return "", false, nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return "", false, fmt.Errorf("final response image_generation_call %s must be a string or null", field)
+	}
+	return value, value != "", nil
 }
 
 func normalizeFinalResponseDefaults(response map[string]any) error {

@@ -1188,6 +1188,104 @@ func TestRetrieveTaskPluginResponseSuccessRendersFinal(t *testing.T) {
 	assert.Equal(t, "retrieved-final", response.Output[0].Content[0].Text)
 }
 
+const imageBackgroundRetrievePlugin = `
+	export const protocols = {openai_responses: {
+		renderEvents: function() { throw new Error("image retrieve called renderEvents"); },
+		renderFinal: function(ctx, task) {
+			return {
+				image_response_format: task.data.metadata.response_format,
+				output: task.data.output
+			};
+		}
+	}};
+`
+
+func imageBackgroundRetrieveTask(pinned pluginruntime.PinnedEndpoint, responseFormat string) *model.Task {
+	task := &model.Task{
+		TaskID:     "task_retrieve_image",
+		Platform:   constant.TaskPlatform(pinned.Plugin.Meta.Key),
+		UserId:     71,
+		Status:     model.TaskStatusSuccess,
+		Properties: model.Properties{OriginModelName: "gpt-image-2-background"},
+		CreatedAt:  1_710_000_000,
+	}
+	task.SetData(map[string]any{
+		"metadata": map[string]any{"response_format": responseFormat},
+		"output": []any{map[string]any{
+			"type": "image_generation_call", "status": "completed", "result": nil,
+			"url": "https://img.example/images/a.png", "output_format": "png",
+		}},
+	})
+	return task
+}
+
+func TestRetrieveTaskPluginResponseInlinesBase64(t *testing.T) {
+	pinned := compilePluginProtocolRetrieveEndpoint(t, "retrieve-image-b64", imageBackgroundRetrievePlugin, pluginruntime.Options{})
+	c, recorder := newPluginProtocolRetrieveContext("resp_retrieve_image")
+	deps := pluginProtocolRetrieveDeps(pinned, imageBackgroundRetrieveTask(pinned, "b64_json"), true, nil)
+	downloaded := make([]string, 0, 1)
+	deps.downloadImage = func(url string) (string, string, error) {
+		downloaded = append(downloaded, url)
+		return "image/png", "QUJD", nil
+	}
+
+	retrieveTaskPluginResponse(c, deps)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, []string{"https://img.example/images/a.png"}, downloaded)
+	var response map[string]any
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "completed", response["status"])
+	_, hasHint := response["image_response_format"]
+	assert.False(t, hasHint)
+	output, ok := response["output"].([]any)
+	require.True(t, ok)
+	require.Len(t, output, 1)
+	item := output[0].(map[string]any)
+	assert.Equal(t, "image_generation_call", item["type"])
+	assert.Equal(t, "ig_task_retrieve_image_0", item["id"])
+	assert.Equal(t, "QUJD", item["result"])
+	assert.Nil(t, item["url"])
+}
+
+func TestRenderFinalInlinesBase64KeepsURLOnDownloadError(t *testing.T) {
+	pinned := compilePluginProtocolRetrieveEndpoint(t, "retrieve-image-b64-error", imageBackgroundRetrievePlugin, pluginruntime.Options{})
+	c, recorder := newPluginProtocolRetrieveContext("resp_retrieve_image")
+	deps := pluginProtocolRetrieveDeps(pinned, imageBackgroundRetrieveTask(pinned, "b64_json"), true, nil)
+	deps.downloadImage = func(string) (string, string, error) {
+		return "", "", errors.New("connection refused")
+	}
+
+	retrieveTaskPluginResponse(c, deps)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	var response map[string]any
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "completed", response["status"])
+	item := response["output"].([]any)[0].(map[string]any)
+	assert.Equal(t, "https://img.example/images/a.png", item["url"])
+	assert.Nil(t, item["result"])
+}
+
+func TestRetrieveTaskPluginResponseURLFormatSkipsDownload(t *testing.T) {
+	pinned := compilePluginProtocolRetrieveEndpoint(t, "retrieve-image-url", imageBackgroundRetrievePlugin, pluginruntime.Options{})
+	c, recorder := newPluginProtocolRetrieveContext("resp_retrieve_image")
+	deps := pluginProtocolRetrieveDeps(pinned, imageBackgroundRetrieveTask(pinned, "url"), true, nil)
+	deps.downloadImage = func(string) (string, string, error) {
+		require.FailNow(t, "url format must not download")
+		return "", "", nil
+	}
+
+	retrieveTaskPluginResponse(c, deps)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	var response map[string]any
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	item := response["output"].([]any)[0].(map[string]any)
+	assert.Equal(t, "https://img.example/images/a.png", item["url"])
+	assert.Nil(t, item["result"])
+}
+
 func TestRetrieveTaskPluginResponseStreamOnlySuccessSynthesizesFromEvents(t *testing.T) {
 	logs := make([]string, 0, 1)
 	pinned := compilePluginProtocolRetrieveEndpoint(t, "retrieve-stream-only", `
