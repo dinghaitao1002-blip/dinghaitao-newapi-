@@ -35,6 +35,18 @@ func IsChannelCircuitFailureStatus(statusCode int) bool {
 	return statusCode == 403 || statusCode == 500 || statusCode == 429 || statusCode == 502 || statusCode == 504
 }
 
+// An explicit input-image fetch error describes this request's image source,
+// not the health of the generation channel. Match only the known 400 response
+// prefix; a URL or a generic upstream timeout must not exempt a channel failure.
+func isChannelCircuitInputImageFetchError(statusCode int, errText string) bool {
+	if statusCode != 400 {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(errText))
+	message = strings.TrimSpace(strings.TrimPrefix(message, "status_code=400,"))
+	return strings.HasPrefix(message, "image_url fetch failed:")
+}
+
 func channelCircuitFailureClass(statusCode int, errText string) (string, int, bool) {
 	lowerText := strings.ToLower(errText)
 	if statusCode == 422 || statusCode == 451 || statusCode == 413 ||
@@ -136,11 +148,16 @@ func RecordChannelCircuitFailure(channelID int, modelName string, statusCode int
 	if channelID <= 0 || modelName == "" {
 		return 0, false
 	}
-	failureKey, openKey := channelCircuitKeys(channelID, modelName)
 	text := ""
 	if len(errText) > 0 {
 		text = errText[0]
 	}
+	if isChannelCircuitInputImageFetchError(statusCode, text) {
+		// Neither increment nor reset channel health state: interleaved bad
+		// image URLs must not hide real failures or release an active cooldown.
+		return 0, false
+	}
+	failureKey, openKey := channelCircuitKeys(channelID, modelName)
 	failureClass, threshold, tracked := channelCircuitFailureClass(statusCode, text)
 	if !tracked {
 		if RedisEnabled && RDB != nil {
