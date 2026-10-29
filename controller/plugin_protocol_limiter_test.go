@@ -246,3 +246,36 @@ func assertLimitError(
 	assert.Equal(t, expectedScope, limitError.scope)
 	assert.Equal(t, expectedLimit, limitError.limit)
 }
+
+func TestPluginProtocolObservationLimitsFromEnv(t *testing.T) {
+	t.Run("defaults admit a burst of two hundred per token", func(t *testing.T) {
+		limits := pluginProtocolObservationLimitsFromEnv()
+		assert.Equal(t, pluginProtocolObservationLimits{
+			global:    2048,
+			perPlugin: 1024,
+			perUser:   256,
+			perToken:  256,
+		}, limits)
+	})
+
+	t.Run("environment overrides every scope", func(t *testing.T) {
+		t.Setenv("TASK_OBSERVATION_LIMIT_GLOBAL", "10")
+		t.Setenv("TASK_OBSERVATION_LIMIT_PLUGIN", "8")
+		t.Setenv("TASK_OBSERVATION_LIMIT_USER", "6")
+		t.Setenv("TASK_OBSERVATION_LIMIT_TOKEN", "4")
+		assert.Equal(t, pluginProtocolObservationLimits{
+			global:    10,
+			perPlugin: 8,
+			perUser:   6,
+			perToken:  4,
+		}, pluginProtocolObservationLimitsFromEnv())
+	})
+
+	t.Run("non-positive or malformed values keep the default", func(t *testing.T) {
+		t.Setenv("TASK_OBSERVATION_LIMIT_GLOBAL", "0")
+		t.Setenv("TASK_OBSERVATION_LIMIT_PLUGIN", "-5")
+		t.Setenv("TASK_OBSERVATION_LIMIT_USER", "many")
+		t.Setenv("TASK_OBSERVATION_LIMIT_TOKEN", "")
+		assert.Equal(t, defaultPluginProtocolObservationLimits, pluginProtocolObservationLimitsFromEnv())
+	})
+}

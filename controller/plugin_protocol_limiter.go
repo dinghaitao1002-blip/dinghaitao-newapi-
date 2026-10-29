@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 var (
@@ -19,16 +21,41 @@ type pluginProtocolObservationLimits struct {
 	perToken  int
 }
 
+// A task observation holds a slot only while its submission is in flight,
+// so these caps bound concurrent submissions, not running tasks. Clients
+// that fan out a batch (hundreds of background image requests on one token)
+// must fit under the per-token cap or they receive an immediate 429.
 var defaultPluginProtocolObservationLimits = pluginProtocolObservationLimits{
-	global:    128,
-	perPlugin: 32,
-	perUser:   4,
-	perToken:  2,
+	global:    2048,
+	perPlugin: 1024,
+	perUser:   256,
+	perToken:  256,
 }
 
 var pluginProtocolObservationAdmissions = newPluginProtocolObservationLimiter(
-	defaultPluginProtocolObservationLimits,
+	pluginProtocolObservationLimitsFromEnv(),
 )
+
+// pluginProtocolObservationLimitsFromEnv applies the TASK_OBSERVATION_LIMIT_*
+// overrides; a missing, malformed or non-positive value keeps the default for
+// that scope so a bad deploy cannot close the endpoint entirely.
+func pluginProtocolObservationLimitsFromEnv() pluginProtocolObservationLimits {
+	limits := defaultPluginProtocolObservationLimits
+	for _, scope := range []struct {
+		env   string
+		value *int
+	}{
+		{env: "TASK_OBSERVATION_LIMIT_GLOBAL", value: &limits.global},
+		{env: "TASK_OBSERVATION_LIMIT_PLUGIN", value: &limits.perPlugin},
+		{env: "TASK_OBSERVATION_LIMIT_USER", value: &limits.perUser},
+		{env: "TASK_OBSERVATION_LIMIT_TOKEN", value: &limits.perToken},
+	} {
+		if configured := common.GetEnvOrDefault(scope.env, *scope.value); configured > 0 {
+			*scope.value = configured
+		}
+	}
+	return limits
+}
 
 type pluginProtocolObservationLimitError struct {
 	scope string
