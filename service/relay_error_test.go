@@ -5,18 +5,146 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var relayCircuitTestChannels atomic.Int64
+
+func withRelayCircuitTestSettings(t *testing.T, useRedis bool) *miniredis.Miniredis {
+	t.Helper()
+	oldEnabled, oldRDB := common.RedisEnabled, common.RDB
+	oldThreshold, oldForbidden, oldInternal := common.ChannelCircuitFailureThreshold, common.ChannelCircuitForbiddenThreshold, common.ChannelCircuitInternalThreshold
+	oldWindow, oldCooldown := common.ChannelCircuitFailureWindow, common.ChannelCircuitCooldown
+	common.RedisEnabled = useRedis
+	common.ChannelCircuitFailureThreshold, common.ChannelCircuitForbiddenThreshold, common.ChannelCircuitInternalThreshold = 2, 2, 2
+	common.ChannelCircuitFailureWindow, common.ChannelCircuitCooldown = time.Minute, time.Minute
+	var server *miniredis.Miniredis
+	if useRedis {
+		server = miniredis.RunT(t)
+		client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+		common.RDB = client
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+	}
+	t.Cleanup(func() {
+		common.RedisEnabled, common.RDB = oldEnabled, oldRDB
+		common.ChannelCircuitFailureThreshold, common.ChannelCircuitForbiddenThreshold, common.ChannelCircuitInternalThreshold = oldThreshold, oldForbidden, oldInternal
+		common.ChannelCircuitFailureWindow, common.ChannelCircuitCooldown = oldWindow, oldCooldown
+	})
+	return server
+}
+
+func TestRecordRelayChannelCircuitFailurePreservesHealthForLocalErrors(t *testing.T) {
+	for _, useRedis := range []bool{false, true} {
+		name := "memory"
+		if useRedis {
+			name = "redis"
+		}
+		t.Run(name, func(t *testing.T) {
+			server := withRelayCircuitTestSettings(t, useRedis)
+			channelID := 730000 + int(relayCircuitTestChannels.Add(1))
+			modelName := t.Name()
+			localErrors := []*types.NewAPIError{nil}
+			for _, code := range []types.ErrorCode{
+				types.ErrorCodeInvalidRequest, types.ErrorCodeBadRequestBody,
+				types.ErrorCodeReadRequestBodyFailed, types.ErrorCodeConvertRequestFailed,
+				types.ErrorCodeChannelModelMappedError, types.ErrorCodeChannelParamOverrideInvalid,
+				types.ErrorCodeChannelHeaderOverrideInvalid, types.ErrorCodeCountTokenFailed,
+				types.ErrorCodeModelPriceError, types.ErrorCodeInvalidApiType,
+				types.ErrorCodeJsonMarshalFailed, types.ErrorCodeGenRelayInfoFailed,
+			} {
+				localErrors = append(localErrors, types.NewError(errors.New("local request rejection"), code))
+			}
+			localErrors = append(localErrors,
+				types.NewErrorWithStatusCode(errors.New("invalid request"), types.ErrorCodeInvalidRequest, http.StatusBadRequest),
+				relaycommon.NewAPIErrorFromParamOverride(&relaycommon.ParamOverrideReturnError{
+					Message: " local policy rejection ", StatusCode: http.StatusServiceUnavailable,
+					Code: "provider_like_error", Type: "server_error", SkipRetry: true,
+				}),
+			)
+			policyErr := localErrors[len(localErrors)-1]
+			assert.Equal(t, "local policy rejection", policyErr.Error())
+			assert.Equal(t, http.StatusServiceUnavailable, policyErr.StatusCode)
+			assert.Equal(t, "server_error", policyErr.ToOpenAIError().Type)
+			assert.Equal(t, "provider_like_error", policyErr.ToOpenAIError().Code)
+			assert.True(t, types.IsSkipRetryError(policyErr))
+			for range 3 {
+				for _, apiErr := range localErrors {
+					count, tripped := RecordRelayChannelCircuitFailure(channelID, modelName, apiErr)
+					assert.Zero(t, count)
+					assert.False(t, tripped)
+				}
+			}
+			assert.Equal(t, []int{channelID}, common.FilterUsableChannelIDs([]int{channelID}, modelName))
+
+			upstreamErr := types.NewOpenAIError(errors.New("gateway failure"), types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway)
+			count, tripped := RecordRelayChannelCircuitFailure(channelID, modelName, upstreamErr)
+			require.Equal(t, 1, count)
+			require.False(t, tripped)
+			for _, apiErr := range localErrors {
+				_, _ = RecordRelayChannelCircuitFailure(channelID, modelName, apiErr)
+			}
+			count, tripped = RecordRelayChannelCircuitFailure(channelID, modelName, upstreamErr)
+			require.Equal(t, 2, count, "local errors must not reset real failures")
+			require.True(t, tripped)
+			if server != nil {
+				server.FastForward(30 * time.Second)
+			}
+			for _, apiErr := range localErrors {
+				_, _ = RecordRelayChannelCircuitFailure(channelID, modelName, apiErr)
+			}
+			assert.True(t, common.IsChannelCircuitOpen(channelID, modelName))
+			if server != nil {
+				server.FastForward(31 * time.Second)
+				assert.False(t, common.IsChannelCircuitOpen(channelID, modelName), "local errors must not extend cooldown")
+			}
+		})
+	}
+}
+
+func TestRecordRelayChannelCircuitFailureKeepsUpstreamProtection(t *testing.T) {
+	for _, useRedis := range []bool{false, true} {
+		name := "memory"
+		if useRedis {
+			name = "redis"
+		}
+		t.Run(name, func(t *testing.T) {
+			withRelayCircuitTestSettings(t, useRedis)
+			errs := []*types.NewAPIError{
+				types.NewError(errors.New("upstream connection failed"), types.ErrorCodeDoRequestFailed),
+				types.NewError(errors.New("upstream response truncated"), types.ErrorCodeReadResponseBodyFailed),
+				types.NewOpenAIError(errors.New("upstream failed"), types.ErrorCodeConvertRequestFailed, http.StatusInternalServerError),
+			}
+			for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+				errs = append(errs, types.NewOpenAIError(errors.New("upstream failed"), types.ErrorCodeBadResponseStatusCode, status))
+			}
+			for _, apiErr := range errs {
+				channelID := 730000 + int(relayCircuitTestChannels.Add(1))
+				count, tripped := RecordRelayChannelCircuitFailure(channelID, t.Name(), apiErr)
+				require.Equal(t, 1, count)
+				require.False(t, tripped)
+				count, tripped = RecordRelayChannelCircuitFailure(channelID, t.Name(), apiErr)
+				assert.Equal(t, 2, count)
+				assert.True(t, tripped)
+				assert.True(t, common.IsChannelCircuitOpen(channelID, t.Name()))
+			}
+		})
+	}
+}
 
 func TestShouldRetryRelayErrorHonorsChannelPinOnChannelError(t *testing.T) {
 	err := types.NewError(errors.New("channel failed"), types.ErrorCodeChannelNoAvailableKey)

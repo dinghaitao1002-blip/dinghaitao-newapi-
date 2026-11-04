@@ -18,6 +18,32 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// RecordRelayChannelCircuitFailure excludes pre-upstream request failures from
+// channel health. Skipping the recorder also preserves any real failure streak
+// or active cooldown; an unrelated local rejection is not a channel success.
+func RecordRelayChannelCircuitFailure(channelID int, modelName string, err *types.NewAPIError) (int, bool) {
+	if err == nil {
+		return 0, false
+	}
+	if _, localRejection := relaycommon.AsParamOverrideReturnError(err); localRejection {
+		return 0, false
+	}
+	if err.GetErrorType() == types.ErrorTypeNewAPIError {
+		switch err.GetErrorCode() {
+		case types.ErrorCodeInvalidRequest, types.ErrorCodeBadRequestBody,
+			types.ErrorCodeReadRequestBodyFailed, types.ErrorCodeConvertRequestFailed,
+			types.ErrorCodeChannelModelMappedError, types.ErrorCodeChannelParamOverrideInvalid,
+			types.ErrorCodeChannelHeaderOverrideInvalid, types.ErrorCodeCountTokenFailed,
+			types.ErrorCodeModelPriceError, types.ErrorCodeInvalidApiType,
+			types.ErrorCodeJsonMarshalFailed, types.ErrorCodeGenRelayInfoFailed:
+			return 0, false
+		}
+	}
+	// Transport and response errors can also use new_api_error. Their status
+	// still describes the upstream connection and must retain circuit protection.
+	return common.RecordChannelCircuitFailure(channelID, modelName, err.StatusCode, err.Error())
+}
+
 // DecideRelayRetry is the single retry decision for relay attempts. The reason
 // is recorded in the request policy decision events of the log details.
 func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) PolicyDecision {

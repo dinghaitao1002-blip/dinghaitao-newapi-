@@ -140,11 +140,17 @@ func NewAPIErrorFromParamOverride(err *ParamOverrideReturnError) *types.NewAPIEr
 		opts = append(opts, types.ErrOptionWithSkipRetry())
 	}
 
-	return types.WithOpenAIError(types.OpenAIError{
+	apiErr := types.WithOpenAIError(types.OpenAIError{
 		Message: message,
 		Type:    errorType,
 		Code:    errorCode,
 	}, statusCode, opts...)
+	// Preserve the local origin even when the configured response uses an
+	// upstream-shaped error code and status. The public error stays unchanged.
+	localRejection := *err
+	localRejection.Message = message
+	apiErr.Err = &localRejection
+	return apiErr
 }
 
 func ApplyParamOverride(jsonData []byte, paramOverride map[string]any, conditionContext map[string]any) ([]byte, error) {

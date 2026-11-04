@@ -249,7 +249,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				logger.LogError(c, fmt.Sprintf("failed to persist upstream quota stop: channel #%d: %v", channel.Id, stopErr))
 			}
 		}
-		_, circuitTripped := common.RecordChannelCircuitFailure(channel.Id, relayInfo.OriginModelName, newAPIError.StatusCode, newAPIError.Error())
+		_, circuitTripped := service.RecordRelayChannelCircuitFailure(channel.Id, relayInfo.OriginModelName, newAPIError)
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
 		if quotaExhausted && (!quotaStopped || !shouldRetryQuotaExhaustion(c, newAPIError)) {
 			decision = service.PolicyDecision{Action: "stop", Reason: "upstream_quota_exhausted", Source: "channel"}
@@ -655,7 +655,7 @@ func executeTaskSubmissionWith(
 		relayInfo.LastError = taskAPIError
 		decision := decideTaskRetry(c, taskErr, common.RetryTimes-retryParam.GetRetry())
 		if !taskErr.LocalError {
-			_, circuitTripped := common.RecordChannelCircuitFailure(channel.Id, relayInfo.OriginModelName, taskErr.StatusCode, taskAPIError.Error())
+			_, circuitTripped := service.RecordRelayChannelCircuitFailure(channel.Id, relayInfo.OriginModelName, taskAPIError)
 			if circuitTripped && !forcedCircuitRetryUsed && decideTaskRetry(c, taskErr, 1).Action == "retry" {
 				forcedCircuitRetryUsed = true
 				relayInfo.LockedChannel = nil
