@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, it } from 'vitest'
 
+import { getPriceSummary } from '@/features/system-settings/models/model-pricing-snapshots'
+
 import { buildPricingChanges, type ModelPricingConfig } from '../api'
 import {
   applyPriceSyncSelections,
@@ -26,6 +28,46 @@ import {
   pricingOptions,
   pricingRow,
 } from '../pricing'
+
+it.each([
+  ['tier("image", fixed(0.007)) * image_count', '$0.007 / image'],
+  ['tier("request", fixed(0.01))', '$0.01 / request'],
+  ['tier("image", fixed(0)) * image_count', '$0 / image'],
+])(
+  'shows the fixed unit price in the model list for %s',
+  (billingExpr, expected) => {
+    expect(
+      getPriceSummary(
+        {
+          name: 'gpt-image-2.6-flare',
+          billingMode: 'tiered_expr',
+          billingExpr,
+          hasConflict: false,
+        },
+        (key) => key
+      )
+    ).toBe(expected)
+  }
+)
+
+it('does not present conditional prices or request multipliers as a flat price', () => {
+  for (const billingExpr of [
+    'len < 1000 ? tier("short", fixed(0.01)) : tier("long", fixed(0.02))',
+    'tier("request", fixed(0.01)) * (param("quality") == "high" ? 2 : 1)',
+  ]) {
+    expect(
+      getPriceSummary(
+        {
+          name: 'image-model',
+          billingMode: 'tiered_expr',
+          billingExpr,
+          hasConflict: false,
+        },
+        (key) => key
+      )
+    ).not.toContain('$0.01 /')
+  }
+})
 
 describe('shared model pricing', () => {
   it('preserves explicit zero prices and cache-write configuration', () => {

@@ -333,6 +333,243 @@ function renderEditor(
   return { ref, dirty }
 }
 
+const imageProvider = {
+  plugin_key: 'chatgpt2api',
+  plugin_name: 'ChatGPT2API',
+  usage_schema: {
+    image_count: { type: 'number' as const, unit: 'count' as const },
+  },
+  configured: 'tier("image", u("image_count") * 0)',
+  effective: 'tier("image", u("image_count") * 0)',
+  compatible: true,
+}
+
+function renderSimpleImageEditor() {
+  return renderEditor(
+    {
+      name: 'gpt-image-2.6-flare',
+      billingMode: 'tiered_expr',
+      billingExpr: 'tier("image", fixed(0.007)) * image_count',
+      pluginBillingExpr: { chatgpt2api: imageProvider.configured },
+    },
+    [imageProvider]
+  )
+}
+
+it('shows different ordinary and background image prices without changing an untouched draft', async () => {
+  const { ref, dirty } = renderSimpleImageEditor()
+  expect(screen.getByText('Simple image pricing')).toBeVisible()
+  expect(screen.getByText('Ordinary OpenAI: $0.007/image')).toBeVisible()
+  expect(screen.getByText('ChatGPT2API: $0/image')).toBeVisible()
+  expect(screen.getByRole('textbox', { name: 'Unit price' })).toHaveValue('')
+  expect(
+    screen.queryByRole('tab', { name: 'Expression' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('complementary', { name: 'Preview' })
+  ).not.toBeInTheDocument()
+  expect(dirty).toHaveBeenLastCalledWith(false)
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingExpr: 'tier("image", fixed(0.007)) * image_count',
+    pluginBillingExpr: { chatgpt2api: imageProvider.configured },
+  })
+})
+
+it('updates ordinary and background expressions together only after an image price is entered', async () => {
+  const { ref } = renderSimpleImageEditor()
+  const user = userEvent.setup()
+  await user.type(screen.getByRole('textbox', { name: 'Unit price' }), '0.012')
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingMode: 'tiered_expr',
+    billingExpr: 'tier("image", fixed(0.012)) * image_count',
+    pluginBillingExpr: {
+      chatgpt2api: 'tier("image", u("image_count") * 0.012)',
+    },
+  })
+  await user.click(screen.getByRole('combobox', { name: 'Charge by' }))
+  await user.click(screen.getByRole('option', { name: 'Per request' }))
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingExpr: 'tier("request", fixed(0.012))',
+    pluginBillingExpr: { chatgpt2api: 'tier("request", 0.012)' },
+  })
+})
+
+it('keeps an explicit zero provider price distinct from an unchanged legacy image price', async () => {
+  const { ref } = renderEditor(
+    {
+      name: 'gpt-image-2',
+      billingMode: 'per-request',
+      price: '0.007',
+      pluginBillingExpr: { chatgpt2api: imageProvider.configured },
+    },
+    [imageProvider]
+  )
+  expect(screen.getByText('Ordinary OpenAI: $0.007/image')).toBeVisible()
+  expect(screen.getByText('ChatGPT2API: $0/image')).toBeVisible()
+  expect(screen.getByRole('textbox', { name: 'Unit price' })).toHaveValue('')
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingMode: 'per-request',
+    price: '0.007',
+    pluginBillingExpr: { chatgpt2api: imageProvider.configured },
+  })
+})
+
+it('keeps native legacy image aliases in their existing per-request editor', async () => {
+  const { ref } = renderEditor(
+    {
+      name: 'gemini-nano-banana-2.1',
+      billingMode: 'per-request',
+      price: '0.007',
+    },
+    []
+  )
+  expect(
+    screen.queryByRole('region', { name: 'Simple image pricing' })
+  ).not.toBeInTheDocument()
+  expect(screen.getByRole('textbox', { name: 'Fixed price' })).toHaveValue(
+    '0.007'
+  )
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingMode: 'per-request',
+    price: '0.007',
+  })
+})
+
+it('blocks saving an emptied simple price instead of replacing it with zero', async () => {
+  const { ref } = renderSimpleImageEditor()
+  const user = userEvent.setup()
+  const price = screen.getByRole('textbox', { name: 'Unit price' })
+  await user.type(price, '0.012')
+  await user.clear(price)
+  expect(price).toHaveAttribute('aria-invalid', 'true')
+  expect(await ref.current?.commitDraft()).toBeNull()
+  await user.type(price, '0')
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingExpr: 'tier("image", fixed(0)) * image_count',
+    pluginBillingExpr: { chatgpt2api: 'tier("image", u("image_count") * 0)' },
+  })
+})
+
+it('refreshes the simple summary after an advanced provider price is edited', async () => {
+  const { ref } = renderSimpleImageEditor()
+  const user = userEvent.setup()
+  await user.type(screen.getByRole('textbox', { name: 'Unit price' }), '0.012')
+  await user.click(screen.getByRole('button', { name: 'Advanced settings' }))
+  expect(screen.getByRole('complementary', { name: 'Preview' })).toBeVisible()
+  await user.click(screen.getByRole('tab', { name: 'ChatGPT2API' }))
+  const advancedPrice = screen.getByRole('textbox', { name: 'image_count' })
+  await user.clear(advancedPrice)
+  await user.type(advancedPrice, '0.03')
+  expect(screen.getByRole('textbox', { name: 'Unit price' })).toHaveValue('')
+  expect(screen.getByText('ChatGPT2API: $0.03/image')).toBeVisible()
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingExpr: 'tier("image", fixed(0.012)) * image_count',
+    pluginBillingExpr: { chatgpt2api: 'tier("base", u("image_count") * 0.03)' },
+  })
+})
+
+it('keeps separate quality pricing behind the explicit simple-pricing replacement confirmation', () => {
+  renderEditor({ name: 'gpt-image-2', billingMode: 'image_quality' }, [])
+  expect(
+    screen.getByRole('button', { name: 'Use simple pricing' })
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('textbox', { name: 'Unit price' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.getByRole('button', { name: 'Advanced settings' })
+  ).toHaveAttribute('aria-expanded', 'true')
+})
+
+it('shows an inherited provider price from the current advanced draft instead of its old server snapshot', async () => {
+  const expression = 'tier("image", u("image_count") * 0.007)'
+  const { ref } = renderEditor(
+    {
+      name: 'gpt-image-2',
+      billingMode: 'tiered_expr',
+      billingExpr: expression,
+    },
+    [{ ...imageProvider, configured: '', effective: expression }]
+  )
+  expect(screen.getByText('ChatGPT2API: $0.007/image')).toBeVisible()
+  const user = userEvent.setup()
+  const price = screen.getByRole('textbox', { name: 'image_count' })
+  await user.clear(price)
+  await user.type(price, '0.02')
+  expect(screen.getByText('ChatGPT2API: $0.02/image')).toBeVisible()
+  expect(
+    screen.queryByText('ChatGPT2API: $0.007/image')
+  ).not.toBeInTheDocument()
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingExpr: 'tier("base", u("image_count") * 0.02)',
+    pluginBillingExpr: {},
+  })
+})
+
+it.each([
+  {
+    name: 'gpt-image-2',
+    billingMode: 'per-token' as const,
+    ratio: '2',
+    billingExpr: 'tier("request", fixed(0.01))',
+  },
+  { name: 'dall-e-3', billingMode: 'per-request' as const, price: '0.04' },
+])(
+  'preserves $name legacy pricing without treating retained expressions or size multipliers as a simple price',
+  async (draft) => {
+    const { ref } = renderEditor(draft, [])
+    expect(
+      screen.getByRole('button', { name: 'Use simple pricing' })
+    ).toBeVisible()
+    expect(
+      screen.queryByRole('textbox', { name: 'Unit price' })
+    ).not.toBeInTheDocument()
+    expect(await ref.current?.commitDraft()).toMatchObject({
+      name: draft.name,
+      billingMode: draft.billingMode,
+      price: draft.price ?? '',
+      ratio: draft.ratio ?? '',
+    })
+  }
+)
+
+it('keeps complex image rules in advanced settings until simple pricing is explicitly confirmed', async () => {
+  const expression =
+    'param("quality") == "high" ? tier("high", fixed(0.02)) : tier("normal", fixed(0.01))'
+  const { ref } = renderEditor(
+    {
+      name: 'gpt-image-2',
+      billingMode: 'tiered_expr',
+      billingExpr: expression,
+    },
+    []
+  )
+  expect(screen.getByRole('tab', { name: 'Expression' })).toBeVisible()
+  expect(
+    screen.queryByRole('textbox', { name: 'Unit price' })
+  ).not.toBeInTheDocument()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Use simple pricing' }))
+  const dialog = screen.getByRole('alertdialog')
+  await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingExpr: expression,
+  })
+  await user.click(screen.getByRole('button', { name: 'Use simple pricing' }))
+  await user.click(
+    within(screen.getByRole('alertdialog')).getByRole('button', {
+      name: 'Use simple pricing',
+    })
+  )
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingExpr: expression,
+  })
+  await user.type(screen.getByRole('textbox', { name: 'Unit price' }), '0.03')
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingExpr: 'tier("image", fixed(0.03)) * image_count',
+  })
+})
+
 it('shows and removes a single provider override while retaining the per-call default', async () => {
   const expression = 'tier("base", u("seconds") * 0.4)'
   const { ref } = renderEditor(

@@ -7358,6 +7358,18 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Simple image pricing": "画像の簡単な料金設定",
+    "Set a unit price for ordinary and background image requests together. Group multipliers still apply.": "通常とバックグラウンドの画像生成に同じ単価を設定します。グループ倍率は引き続き適用されます。",
+    "Advanced or unconfigured pricing": "詳細な料金設定または未設定",
+    "Existing advanced rules are preserved. Use advanced settings, or explicitly replace them with a simple price.": "既存の詳細ルールは保持されます。詳細設定で編集するか、簡単な料金に明示的に置き換えてください。",
+    "Use simple pricing": "簡単な料金設定を使う",
+    "Prices differ or are not configured. Entering a price updates both ordinary and background image pricing.": "通常とバックグラウンドの料金が異なるか未設定です。単価を入力すると両方が更新されます。",
+    "Charge by": "課金単位",
+    "Unit price": "単価",
+    "One request returning three images is charged three unit prices.": "1回で3枚返される場合、単価の3倍が課金されます。",
+    "One successful request is charged once, regardless of image count.": "成功したリクエストは画像数に関係なく1回分の料金です。",
+    "Existing expressions and request rules will only be replaced after you enter a new simple price. Changes apply after saving.": "新しい単価を入力した場合のみ既存の式とルールが置き換えられます。保存後に適用されます。",
+    "Advanced settings": "詳細設定"
   }
 }

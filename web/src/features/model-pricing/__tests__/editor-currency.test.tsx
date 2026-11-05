@@ -603,6 +603,9 @@ it('preserves a legacy per-request draft when conversion is unsupported', async 
   })
   await userEvent
     .setup()
+    .click(screen.getByRole('button', { name: 'Advanced settings' }))
+  await userEvent
+    .setup()
     .click(screen.getByRole('button', { name: 'Convert to expression' }))
   expect(await screen.findByRole('status')).toHaveTextContent(
     'Image prices with count, size or quality adjustments must be converted manually.'

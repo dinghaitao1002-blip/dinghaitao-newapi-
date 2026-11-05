@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { splitBillingExprAndRequestRules } from '@/features/pricing/lib/billing-expr'
+import { parseVisualBillingDocument } from '@/features/pricing/lib/billing-expression/visual'
 import { splitPluginBillingExprKey } from '@/features/pricing/lib/plugin-pricing'
 
 import { safeJsonParse } from '../utils/json-parser'
@@ -111,6 +112,17 @@ const getExpressionSummary = (
   row: ModelPricingSnapshot,
   t: (key: string) => string
 ) => {
+  const split = splitBillingExprAndRequestRules(row.billingExpr || '')
+  const document = parseVisualBillingDocument(split.billingExpr)
+  if (
+    !row.requestRuleExpr?.trim() &&
+    !split.requestRuleExpr &&
+    document?.root.kind === 'tier' &&
+    document.root.billingUnit === 'request'
+  ) {
+    const unit = document.imageCount ? 'image' : 'request'
+    return `$${formatPricingNumber(Number(document.root.fixedPrice))} / ${t(unit)}`
+  }
   const tierCount = (row.billingExpr?.match(/tier\(/g) || []).length
   if (tierCount > 0) {
     return `${t('Tiered pricing')} · ${tierCount} ${t('tiers')}`

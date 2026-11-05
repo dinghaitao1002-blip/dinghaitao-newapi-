@@ -27,6 +27,7 @@ import { Button } from '@/components/ui/button'
 import { DynamicPricingBreakdown } from '@/features/pricing/components/dynamic-pricing-breakdown'
 import { ModelPriceCell } from '@/features/pricing/components/model-price-cell'
 import { isDynamicPricingModel } from '@/features/pricing/lib/dynamic-price'
+import { withPluginPricing } from '@/features/pricing/lib/plugin-pricing'
 import {
   buildPreviewRows,
   createInitialLaneState,
@@ -130,6 +131,41 @@ export function ModelPricingPanel(props: {
   }
   if (!editData || !entry) return <LoadingState />
   const effectivePricing = modelPricingDisplay(entry)
+  const pluginVariants =
+    entry.plugin_variants?.filter((variant) => !variant.stale) ?? []
+  const currentPricing = [
+    ...(effectivePricing.billing_usage_schema && pluginVariants.length
+      ? []
+      : [
+          {
+            key: 'ordinary',
+            name: pluginVariants.length ? t('Ordinary OpenAI') : '',
+            model: effectivePricing,
+            ordinary: true,
+          },
+        ]),
+    ...pluginVariants.map((variant) => {
+      const expressionPricing =
+        Boolean(variant.effective.trim()) ||
+        effectivePricing.billing_mode === 'tiered_expr'
+      return {
+        key: `plugin:${variant.plugin_key}`,
+        name: variant.plugin_name,
+        model:
+          expressionPricing && !variant.compatible
+            ? null
+            : withPluginPricing(effectivePricing, {
+                plugin_key: variant.plugin_key,
+                plugin_name: variant.plugin_name,
+                billing_mode: expressionPricing ? 'tiered_expr' : 'ratio',
+                billing_expr: variant.effective,
+                billing_usage_schema: variant.usage_schema,
+                billing_usage_examples: variant.usage_examples,
+              }),
+        ordinary: false,
+      }
+    }),
+  ]
   const siteCurrency = getSitePricingCurrency(currencyConfig)
   const currency =
     currencyPreference === 'site' && isValidPricingCurrency(siteCurrency)
@@ -193,41 +229,60 @@ export function ModelPricingPanel(props: {
               className='space-y-3 border-b pb-3'
             >
               <h3 className='text-muted-foreground text-xs'>
-                {!effectivePricing.billing_usage_schema &&
-                entry.plugin_variants?.length ? (
-                  <>{t('Ordinary OpenAI')} · </>
-                ) : null}
                 {t('Current Billing')}
               </h3>
-              <div className='max-w-xs'>
-                <ModelPriceCell
-                  model={effectivePricing}
-                  options={{ tokenUnit: 'M' }}
-                  showExpression={false}
-                />
-              </div>
-              {isDynamicPricingModel(effectivePricing) ? (
-                <DynamicPricingBreakdown
-                  compact
-                  billingExpr={effectivePricing.billing_expr}
-                  usageSchema={effectivePricing.billing_usage_schema}
-                />
-              ) : (
-                effectivePricing.quota_type === 0 &&
-                Number.isFinite(effectivePricing.model_ratio) && (
-                  <dl className='grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3'>
-                    {details.map((row) => (
-                      <div key={row.key}>
-                        <dt className='text-muted-foreground'>{row.label}</dt>
-                        <dd className='mt-1 font-mono tabular-nums'>
-                          {row.value}
-                          {row.unit !== 'none' && ' / 1M'}
-                        </dd>
+              {currentPricing.map((provider) => (
+                <div
+                  key={provider.key}
+                  role={provider.name ? 'group' : undefined}
+                  aria-label={provider.name || undefined}
+                  className='space-y-2'
+                >
+                  {provider.name && (
+                    <h4 className='text-sm font-medium'>{provider.name}</h4>
+                  )}
+                  {!provider.model ? (
+                    <p className='text-muted-foreground text-sm'>
+                      {t('Not configured')}
+                    </p>
+                  ) : (
+                    <>
+                      <div className='max-w-xs'>
+                        <ModelPriceCell
+                          model={provider.model}
+                          options={{ tokenUnit: 'M' }}
+                          showExpression={false}
+                        />
                       </div>
-                    ))}
-                  </dl>
-                )
-              )}
+                      {isDynamicPricingModel(provider.model) ? (
+                        <DynamicPricingBreakdown
+                          compact
+                          billingExpr={provider.model.billing_expr}
+                          usageSchema={provider.model.billing_usage_schema}
+                        />
+                      ) : (
+                        provider.ordinary &&
+                        effectivePricing.quota_type === 0 &&
+                        Number.isFinite(effectivePricing.model_ratio) && (
+                          <dl className='grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3'>
+                            {details.map((row) => (
+                              <div key={row.key}>
+                                <dt className='text-muted-foreground'>
+                                  {row.label}
+                                </dt>
+                                <dd className='mt-1 font-mono tabular-nums'>
+                                  {row.value}
+                                  {row.unit !== 'none' && ' / 1M'}
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                        )
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
             </section>
             {save.isError && (
               <div>

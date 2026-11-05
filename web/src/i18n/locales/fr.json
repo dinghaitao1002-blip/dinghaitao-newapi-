@@ -7358,6 +7358,18 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Simple image pricing": "Tarification simple des images",
+    "Set a unit price for ordinary and background image requests together. Group multipliers still apply.": "Définissez un prix commun aux images synchrones et en arrière-plan. Les multiplicateurs de groupe restent applicables.",
+    "Advanced or unconfigured pricing": "Tarification avancée ou non configurée",
+    "Existing advanced rules are preserved. Use advanced settings, or explicitly replace them with a simple price.": "Les règles avancées sont conservées. Modifiez-les dans les paramètres avancés ou remplacez-les explicitement par un prix simple.",
+    "Use simple pricing": "Utiliser une tarification simple",
+    "Prices differ or are not configured. Entering a price updates both ordinary and background image pricing.": "Les prix diffèrent ou ne sont pas configurés. Un nouveau prix met à jour les deux modes de génération.",
+    "Charge by": "Facturer par",
+    "Unit price": "Prix unitaire",
+    "One request returning three images is charged three unit prices.": "Une requête renvoyant trois images est facturée trois fois le prix unitaire.",
+    "One successful request is charged once, regardless of image count.": "Une requête réussie est facturée une fois, quel que soit le nombre d’images.",
+    "Existing expressions and request rules will only be replaced after you enter a new simple price. Changes apply after saving.": "Les expressions et règles sont remplacées uniquement après la saisie d’un nouveau prix simple. Enregistrez pour appliquer.",
+    "Advanced settings": "Paramètres avancés"
   }
 }
