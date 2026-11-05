@@ -3,6 +3,7 @@ package helper
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -503,6 +504,13 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 	exprStr, ok := billing_setting.GetBillingExpr(billingModelName)
 	if !ok {
 		return hosttypes.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", billingModelName)
+	}
+	// A flat per-image private price changes the unit price only. Keep image
+	// quantity validation and settlement on the existing frozen expression path.
+	if _, flatImage := billingexpr.ImageUnitPrice(exprStr, false); flatImage {
+		if price, configured := model.GetUserModelPrice(info.UserId, billingModelName); configured {
+			exprStr = `tier("user_private", fixed(` + strconv.FormatFloat(price, 'g', -1, 64) + `)) * image_count`
+		}
 	}
 	exprHash := billingexpr.ExprHashString(exprStr)
 	usedVars := billingexpr.UsedVarsByHash(exprStr, exprHash)

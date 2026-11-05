@@ -5,6 +5,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -17,6 +20,34 @@ type UserModelPrice struct {
 	Enabled   bool    `json:"enabled" gorm:"not null"`
 	CreatedAt int64   `json:"created_at" gorm:"autoCreateTime;column:created_at"`
 	UpdatedAt int64   `json:"updated_at" gorm:"autoUpdateTime;column:updated_at"`
+}
+
+// PrivateModelUnitPrice reports whether the existing per-user unit-price
+// override can represent this model without flattening dynamic/token pricing.
+// Ordinary image pricing is the display default when provider prices coexist.
+func PrivateModelUnitPrice(pricing Pricing) (float64, bool) {
+	if pricing.BillingMode == billing_setting.BillingModeTieredExpr {
+		if price, ok := billingexpr.ImageUnitPrice(pricing.BillingExpr, false); ok {
+			return price, true
+		}
+		if price, ok := billingexpr.ImageUnitPrice(pricing.BillingExpr, true); ok {
+			return price, true
+		}
+		if strings.TrimSpace(pricing.BillingExpr) != "" {
+			return 0, false
+		}
+	} else if pricing.QuotaType == 1 {
+		return pricing.ModelPrice, true
+	}
+	for _, variant := range pricing.BillingPluginVariants {
+		if variant.BillingMode != billing_setting.BillingModeTieredExpr {
+			continue
+		}
+		if price, ok := billingexpr.ImageUnitPrice(variant.BillingExpr, true); ok {
+			return price, true
+		}
+	}
+	return 0, false
 }
 
 func NormalizeUserModelPriceInput(modelName string, price float64) (string, float64, error) {

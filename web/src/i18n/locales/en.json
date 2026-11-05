@@ -7375,6 +7375,8 @@
     "API Endpoint": "API Endpoint",
     "Per-token pricing": "Per-token pricing",
     "Per-request pricing": "Per-request pricing",
-    "Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode.": "Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode."
+    "Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode.": "Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode.",
+    "Select a fixed-price model": "Select a fixed-price model",
+    "Supports fixed-price models billed per request or per image. This user-specific price takes priority when this user calls the model.": "Supports fixed-price models billed per request or per image. This user-specific price takes priority when this user calls the model."
   }
 }

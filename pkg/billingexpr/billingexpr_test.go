@@ -99,6 +99,43 @@ func TestFixedPriceQuotaBoundariesAndUnsupportedTaskSnapshots(t *testing.T) {
 	assert.Nil(t, trace.FixedPrice)
 }
 
+func TestImageUnitPriceRejectsDynamicAndNonImagePricing(t *testing.T) {
+	for _, tc := range []struct {
+		name, expression string
+		taskUsage        bool
+		price            float64
+		ok               bool
+	}{
+		{"ordinary image", `tier("image", fixed(0.007)) * image_count`, false, 0.007, true},
+		{"reversed ordinary", `image_count * tier("image", fixed(0.007))`, false, 0.007, true},
+		{"version and parentheses", `v1: (tier("image", fixed(0.007))) * (image_count)`, false, 0.007, true},
+		{"ordinary free", `tier("image", fixed(0)) * image_count`, false, 0, true},
+		{"task image", `tier("base", u("image_count") * 0.007)`, true, 0.007, true},
+		{"task without tier", `u("image_count") * 0.007`, true, 0.007, true},
+		{"reversed task", `tier("base", 0.007 * u("image_count"))`, true, 0.007, true},
+		{"task free", `tier("base", u("image_count") * 0)`, true, 0, true},
+		{"task does not use ordinary scale", `tier("image", fixed(0.007)) * image_count`, true, 0, false},
+		{"ordinary does not use task scale", `tier("base", u("image_count") * 0.007)`, false, 0, false},
+		{"fixed request has no image count", `tier("request", fixed(0.007))`, false, 0, false},
+		{"token model", `tier("base", p * 2 + c * 8)`, false, 0, false},
+		{"video usage", `tier("base", u("seconds") * 0.007)`, true, 0, false},
+		{"request rule", `tier("image", fixed(0.007)) * image_count * (param("quality") == "hd" ? 2 : 1)`, false, 0, false},
+		{"unreachable branch", `true ? tier("image", fixed(0.007)) * image_count : tier("tokens", p)`, false, 0, false},
+		{"task extra charge", `tier("base", 0.01 + u("image_count") * 0.007)`, true, 0, false},
+		{"task negative", `tier("base", u("image_count") * -0.007)`, true, 0, false},
+		{"ordinary negative", `tier("image", fixed(-0.007)) * image_count`, false, 0, false},
+		{"ordinary nonfinite scaled price", `tier("image", fixed(1e308)) * image_count`, false, 0, false},
+		{"task nonfinite price", `tier("base", u("image_count") * 1e999)`, true, 0, false},
+		{"malformed", `tier(`, false, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			price, ok := billingexpr.ImageUnitPrice(tc.expression, tc.taskUsage)
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.price, price)
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Claude-style: fixed tiers, input > 200K changes both input & output price
 // ---------------------------------------------------------------------------

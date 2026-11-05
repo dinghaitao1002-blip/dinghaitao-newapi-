@@ -25,7 +25,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 
-import type { User } from '../../types'
+import type { PerCallPricedModel, User } from '../../types'
 import { UsersMutateDrawer } from '../users-mutate-drawer'
 import { UsersProvider } from '../users-provider'
 
@@ -49,7 +49,12 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-async function openPricing() {
+async function openPricing(
+  model: PerCallPricedModel = {
+    model_name: 'image-custom',
+    model_price: 0.05,
+  }
+) {
   useAuthStore
     .getState()
     .auth.setUser({ id: 1, username: 'operator', role: 100 })
@@ -59,7 +64,7 @@ async function openPricing() {
     if (url === '/api/group/') data = ['default']
     if (url === '/api/authz/catalog') data = { resources: [], roles: [] }
     if (url === '/api/user/model-prices/per-call-models') {
-      data = [{ model_name: 'image-custom', model_price: 0.05 }]
+      data = [model]
     }
     return { data: { success: true, data } }
   })
@@ -73,12 +78,48 @@ async function openPricing() {
   )
   await screen.findByDisplayValue('Private price user')
   const user = userEvent.setup()
-  await user.click(screen.getByRole('combobox', { name: '选择按次模型' }))
   await user.click(
-    await screen.findByRole('option', { name: 'image-custom / 0.05' })
+    screen.getByRole('combobox', { name: 'Select a fixed-price model' })
+  )
+  await user.click(
+    await screen.findByRole('option', {
+      name: `${model.model_name} / ${model.model_price}`,
+    })
   )
   return user
 }
+
+it.each(['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])(
+  'saves a private price when %s is returned as a per-image fixed-price model',
+  async (modelName) => {
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({ data: { success: true } })
+    const notify = vi.spyOn(toast, 'success')
+    const user = await openPricing({
+      model_name: modelName,
+      model_price: 0.007,
+    })
+
+    expect(
+      screen.getByText(
+        'Supports fixed-price models billed per request or per image. This user-specific price takes priority when this user calls the model.'
+      )
+    ).toBeVisible()
+    await user.type(screen.getByPlaceholderText('秘价，例如 0.001'), '0.004')
+    await user.click(screen.getByRole('button', { name: '添加/更新' }))
+
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/api/user/23/model-prices', {
+        model_name: modelName,
+        price: 0.004,
+        enabled: true,
+      })
+    )
+    await waitFor(() => expect(notify).toHaveBeenCalledWith('模型秘价已保存'))
+    expect(screen.getByPlaceholderText('秘价，例如 0.001')).toHaveValue('')
+  }
+)
 
 it('saves an explicit zero private price for the selected user without changing the public model price', async () => {
   const post = vi

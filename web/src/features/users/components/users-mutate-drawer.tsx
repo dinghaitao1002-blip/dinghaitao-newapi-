@@ -747,7 +747,7 @@ export function UsersMutateDrawer({
                   <h3 className='text-sm font-medium'>{t('模型秘价设置')}</h3>
                   <p className='text-muted-foreground text-xs'>
                     {t(
-                      '仅支持按次/固定价格模型。设置后，该用户调用此模型会优先使用这里的专属价格。'
+                      'Supports fixed-price models billed per request or per image. This user-specific price takes priority when this user calls the model.'
                     )}
                   </p>
 
@@ -763,8 +763,12 @@ export function UsersMutateDrawer({
                           value !== null && setPrivateModelName(value)
                         }
                       >
-                        <SelectTrigger aria-label={t('选择按次模型')}>
-                          <SelectValue placeholder={t('选择按次模型')} />
+                        <SelectTrigger
+                          aria-label={t('Select a fixed-price model')}
+                        >
+                          <SelectValue
+                            placeholder={t('Select a fixed-price model')}
+                          />
                         </SelectTrigger>
                         <SelectContent alignItemWithTrigger={false}>
                           <SelectGroup>

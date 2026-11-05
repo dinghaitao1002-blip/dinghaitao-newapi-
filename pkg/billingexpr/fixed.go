@@ -5,7 +5,82 @@ import (
 	"math"
 
 	"github.com/expr-lang/expr/ast"
+	"github.com/expr-lang/expr/parser"
 )
+
+// ImageUnitPrice recognizes a single, unconditional USD price per image. It
+// deliberately inspects the original tree so optimized-away branches and
+// request multipliers cannot turn dynamic prices into private-price candidates.
+// Task expressions return USD directly; ordinary expressions use fixed().
+func ImageUnitPrice(expression string, taskUsage bool) (float64, bool) {
+	_, body := ParseExprVersion(expression)
+	tree, err := parser.Parse(body)
+	if err != nil {
+		return 0, false
+	}
+	node := tree.Node
+	if taskUsage {
+		if call, ok := node.(*ast.CallNode); ok {
+			callee, named := call.Callee.(*ast.IdentifierNode)
+			if !named || callee.Value != "tier" || len(call.Arguments) != 2 {
+				return 0, false
+			}
+			if _, literal := call.Arguments[0].(*ast.StringNode); !literal {
+				return 0, false
+			}
+			node = call.Arguments[1]
+		}
+	}
+	product, ok := node.(*ast.BinaryNode)
+	if !ok || product.Operator != "*" {
+		return 0, false
+	}
+	left, right := product.Left, product.Right
+	if taskUsage {
+		price, numeric := requestRuleNumber(right)
+		if !numeric {
+			left, right = right, left
+			price, numeric = requestRuleNumber(right)
+		}
+		usage, call := left.(*ast.CallNode)
+		if !numeric || !call || len(usage.Arguments) != 1 {
+			return 0, false
+		}
+		callee, named := usage.Callee.(*ast.IdentifierNode)
+		key, literal := usage.Arguments[0].(*ast.StringNode)
+		if !named || callee.Value != "u" || !literal || key.Value != "image_count" || price < 0 || math.IsNaN(price) || math.IsInf(price, 0) {
+			return 0, false
+		}
+		return price, true
+	}
+	quantity, identifier := right.(*ast.IdentifierNode)
+	if !identifier || quantity.Value != "image_count" {
+		left, right = right, left
+		quantity, identifier = right.(*ast.IdentifierNode)
+	}
+	if !identifier || quantity.Value != "image_count" {
+		return 0, false
+	}
+	tier, call := left.(*ast.CallNode)
+	if !call || len(tier.Arguments) != 2 {
+		return 0, false
+	}
+	callee, named := tier.Callee.(*ast.IdentifierNode)
+	_, literal := tier.Arguments[0].(*ast.StringNode)
+	if !named || callee.Value != "tier" || !literal {
+		return 0, false
+	}
+	fixed, call := tier.Arguments[1].(*ast.CallNode)
+	if !call || len(fixed.Arguments) != 1 {
+		return 0, false
+	}
+	callee, named = fixed.Callee.(*ast.IdentifierNode)
+	price, numeric := requestRuleNumber(fixed.Arguments[0])
+	if !named || callee.Value != "fixed" || !numeric || price < 0 || math.IsNaN(price) || math.IsInf(price*1_000_000, 0) {
+		return 0, false
+	}
+	return price, true
+}
 
 // UsesFixedPricing includes unselected branches, even when compilation later
 // optimizes them away. Hosts use it to reject unsupported billing entrances.
