@@ -241,7 +241,7 @@ it('previews legacy conversion in the selected currency and applies only after c
   })
   await userEvent
     .setup()
-    .click(screen.getByRole('tab', { name: 'Per-token (deprecated)' }))
+    .click(screen.getByRole('tab', { name: 'Per-token pricing' }))
   expect(
     screen.getByRole('button', { name: 'Convert to expression' })
   ).toBeDisabled()

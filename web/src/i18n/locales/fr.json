@@ -7358,6 +7358,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Per-token pricing": "Tarification par token",
+    "Per-request pricing": "Tarification par requête",
+    "Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode.": "Les prix par token et par requête peuvent être enregistrés directement. Les expressions restent un mode avancé facultatif."
   }
 }

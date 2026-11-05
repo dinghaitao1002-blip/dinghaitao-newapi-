@@ -1241,14 +1241,14 @@ export const ModelPricingEditorPanel = forwardRef<
                     className='gap-4'
                   >
                     <TabsList className='w-full flex-wrap group-data-horizontal/tabs:h-auto'>
-                      <TabsTrigger value='tiered_expr'>
-                        {t('Expression')}
-                      </TabsTrigger>
                       <TabsTrigger value='per-token'>
-                        {t('Per-token (deprecated)')}
+                        {t('Per-token pricing')}
                       </TabsTrigger>
                       <TabsTrigger value='per-request'>
-                        {t('Per-request (deprecated)')}
+                        {t('Per-request pricing')}
+                      </TabsTrigger>
+                      <TabsTrigger value='tiered_expr'>
+                        {t('Expression')}
                       </TabsTrigger>
                       <TabsTrigger value='video_per_second'>
                         {t('按秒')}
@@ -1260,16 +1260,16 @@ export const ModelPricingEditorPanel = forwardRef<
 
                     {(pricingMode === 'per-token' ||
                       pricingMode === 'per-request') && (
-                      <Alert className='border-amber-500/40 bg-amber-500/10 p-4 text-amber-900 dark:text-amber-100'>
-                        <AlertTriangle aria-hidden='true' className='size-5' />
-                        <AlertDescription className='space-y-3 text-sm text-inherit'>
-                          <p className='font-medium'>
+                      <Alert>
+                        <AlertDescription className='space-y-3 text-sm'>
+                          <p>
                             {t(
-                              'Legacy pricing is deprecated. Convert the current prices to an expression draft, then save to apply it.'
+                              'Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode.'
                             )}
                           </p>
                           <Button
                             type='button'
+                            variant='outline'
                             className='w-full sm:w-auto'
                             disabled={
                               conversion.isPending ||

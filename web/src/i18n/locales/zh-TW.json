@@ -7358,6 +7358,9 @@
     "Zhipu": "智譜",
     "Zhipu GLM": "智譜GLM",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "Per-token pricing": "按 Token 計費",
+    "Per-request pricing": "按次計費",
+    "Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode.": "按 Token 與按次計費均可直接設定並儲存；計費運算式保留為可選的進階方式。"
   }
 }

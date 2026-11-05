@@ -333,6 +333,72 @@ function renderEditor(
   return { ref, dirty }
 }
 
+it.each([
+  {
+    mode: 'per-request' as const,
+    label: 'Per-request pricing',
+    field: 'Fixed price',
+    value: '0.03',
+  },
+  {
+    mode: 'per-token' as const,
+    label: 'Per-token pricing',
+    field: 'Input price',
+    value: '4',
+  },
+])(
+  'edits and saves $mode prices directly while preserving the provider expression',
+  async ({ mode, label, field, value }) => {
+    const expression = 'tier("task", u("seconds") * 0.4)'
+    const { ref } = renderEditor(
+      {
+        name: 'shared',
+        billingMode: mode,
+        ...(mode === 'per-request' ? { price: '0.25' } : { ratio: '1' }),
+        pluginBillingExpr: { alpha: expression },
+      },
+      [
+        {
+          plugin_key: 'alpha',
+          plugin_name: 'Alpha',
+          usage_schema: { seconds: { type: 'number', unit: 'second' } },
+          configured: expression,
+          effective: expression,
+          compatible: true,
+        },
+      ]
+    )
+    expect(screen.getByRole('tab', { name: label })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    expect(
+      screen.getByText(
+        'Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode.'
+      )
+    ).toBeVisible()
+    const modeTabs = within(
+      screen.getByRole('tabpanel', { name: 'Ordinary OpenAI' })
+    ).getAllByRole('tab')
+    expect(modeTabs.slice(0, 3).map((tab) => tab.textContent)).toEqual([
+      'Per-token pricing',
+      'Per-request pricing',
+      'Expression',
+    ])
+    const user = userEvent.setup()
+    const price = screen.getByRole('textbox', { name: field })
+    await user.clear(price)
+    await user.type(price, value)
+    const draft = await ref.current?.commitDraft()
+    expect(draft).toMatchObject({
+      billingMode: mode,
+      ...(mode === 'per-request' ? { price: '0.03' } : { ratio: '2' }),
+      pluginBillingExpr: { alpha: expression },
+    })
+    expect(draft?.billingExpr).toBeUndefined()
+  }
+)
+
 it('shows and removes a single provider override while retaining the per-call default', async () => {
   const expression = 'tier("base", u("seconds") * 0.4)'
   const { ref } = renderEditor(
@@ -354,7 +420,7 @@ it('shows and removes a single provider override while retaining the per-call de
     ]
   )
   expect(
-    screen.getByRole('tab', { name: 'Per-request (deprecated)' })
+    screen.getByRole('tab', { name: 'Per-request pricing' })
   ).toHaveAttribute('aria-selected', 'true')
   const user = userEvent.setup()
   await user.click(screen.getByRole('tab', { name: 'Alpha' }))

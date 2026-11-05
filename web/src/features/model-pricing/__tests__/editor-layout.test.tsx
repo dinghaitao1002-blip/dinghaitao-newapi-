@@ -390,9 +390,7 @@ it.each(['default', 'unset'] as const)(
       ).not.toBeInTheDocument()
     }
     await user.click(await screen.findByRole('button', { name: 'Edit' }))
-    await user.click(
-      screen.getByRole('tab', { name: 'Per-request (deprecated)' })
-    )
+    await user.click(screen.getByRole('tab', { name: 'Per-request pricing' }))
     const price = screen.getByRole('textbox', { name: 'Fixed price' })
     await user.clear(price)
     await user.type(price, '0.25')

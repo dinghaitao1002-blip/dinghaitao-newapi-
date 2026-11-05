@@ -7372,6 +7372,9 @@
     "Failed to create category": "创建渠道分类失败",
     "Uncategorized": "未分类",
     "Used only to organize the admin channel list. It does not affect routing, billing, or user groups.": "仅用于整理管理员渠道列表，不影响路由、计费或用户分组。",
-    "API Endpoint": "API 端点"
+    "API Endpoint": "API 端点",
+    "Per-token pricing": "按 Token 计费",
+    "Per-request pricing": "按次计费",
+    "Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode.": "按 Token 和按次计费均可直接设置并保存；计费表达式保留为可选的高级方式。"
   }
 }
