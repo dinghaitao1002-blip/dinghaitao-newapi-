@@ -7358,18 +7358,6 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom",
-    "Simple image pricing": "Простая тарификация изображений",
-    "Set a unit price for ordinary and background image requests together. Group multipliers still apply.": "Задайте общую цену для обычной и фоновой генерации. Множители групп сохраняются.",
-    "Advanced or unconfigured pricing": "Расширенные правила или цена не настроена",
-    "Existing advanced rules are preserved. Use advanced settings, or explicitly replace them with a simple price.": "Текущие правила сохранены. Измените их в расширенных настройках или явно замените простой ценой.",
-    "Use simple pricing": "Использовать простую тарификацию",
-    "Prices differ or are not configured. Entering a price updates both ordinary and background image pricing.": "Цены различаются или не настроены. Новая цена обновит обычную и фоновую генерацию.",
-    "Charge by": "Единица тарификации",
-    "Unit price": "Цена за единицу",
-    "One request returning three images is charged three unit prices.": "Запрос с тремя изображениями оплачивается по тройной цене.",
-    "One successful request is charged once, regardless of image count.": "Успешный запрос оплачивается один раз независимо от числа изображений.",
-    "Existing expressions and request rules will only be replaced after you enter a new simple price. Changes apply after saving.": "Выражения и правила заменятся только после ввода новой простой цены. Изменения вступят в силу после сохранения.",
-    "Advanced settings": "Расширенные настройки"
+    "Zoom": "Zoom"
   }
 }

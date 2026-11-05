@@ -7358,18 +7358,6 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom",
-    "Simple image pricing": "Định giá ảnh đơn giản",
-    "Set a unit price for ordinary and background image requests together. Group multipliers still apply.": "Đặt chung đơn giá cho yêu cầu tạo ảnh thông thường và nền. Hệ số nhóm vẫn áp dụng.",
-    "Advanced or unconfigured pricing": "Giá nâng cao hoặc chưa cấu hình",
-    "Existing advanced rules are preserved. Use advanced settings, or explicitly replace them with a simple price.": "Giữ nguyên các quy tắc nâng cao. Sửa trong cài đặt nâng cao hoặc chủ động thay bằng giá đơn giản.",
-    "Use simple pricing": "Dùng giá đơn giản",
-    "Prices differ or are not configured. Entering a price updates both ordinary and background image pricing.": "Giá thường và nền khác nhau hoặc chưa cấu hình. Nhập giá mới sẽ cập nhật cả hai.",
-    "Charge by": "Tính phí theo",
-    "Unit price": "Đơn giá",
-    "One request returning three images is charged three unit prices.": "Một yêu cầu trả về 3 ảnh sẽ tính phí 3 đơn giá.",
-    "One successful request is charged once, regardless of image count.": "Mỗi yêu cầu thành công chỉ tính phí một lần, bất kể số ảnh.",
-    "Existing expressions and request rules will only be replaced after you enter a new simple price. Changes apply after saving.": "Chỉ thay biểu thức và quy tắc cũ khi nhập đơn giá đơn giản mới. Thay đổi có hiệu lực sau khi lưu.",
-    "Advanced settings": "Cài đặt nâng cao"
+    "Zoom": "Zoom"
   }
 }

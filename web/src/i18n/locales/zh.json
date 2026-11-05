@@ -7372,18 +7372,6 @@
     "Failed to create category": "创建渠道分类失败",
     "Uncategorized": "未分类",
     "Used only to organize the admin channel list. It does not affect routing, billing, or user groups.": "仅用于整理管理员渠道列表，不影响路由、计费或用户分组。",
-    "API Endpoint": "API 端点",
-    "Simple image pricing": "图片简单计费",
-    "Set a unit price for ordinary and background image requests together. Group multipliers still apply.": "统一设置同步与异步生图单价，分组倍率仍然生效。",
-    "Advanced or unconfigured pricing": "使用高级规则或尚未设置价格",
-    "Existing advanced rules are preserved. Use advanced settings, or explicitly replace them with a simple price.": "现有高级规则已保留。可打开高级设置编辑，或选择简单计费后填写新单价。",
-    "Use simple pricing": "使用简单计费",
-    "Prices differ or are not configured. Entering a price updates both ordinary and background image pricing.": "同步与异步价格不一致或尚未设置。填写新单价后，将同时更新两种请求的价格。",
-    "Charge by": "计费方式",
-    "Unit price": "单价",
-    "One request returning three images is charged three unit prices.": "一次返回 3 张图片，收取 3 张的费用。",
-    "One successful request is charged once, regardless of image count.": "每次成功请求只收费一次，与返回图片张数无关。",
-    "Existing expressions and request rules will only be replaced after you enter a new simple price. Changes apply after saving.": "只有填写新的简单单价，才会替换原有表达式及请求规则；点击保存后生效。",
-    "Advanced settings": "高级设置"
+    "API Endpoint": "API 端点"
   }
 }
