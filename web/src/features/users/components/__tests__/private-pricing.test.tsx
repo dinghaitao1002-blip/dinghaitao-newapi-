@@ -103,7 +103,7 @@ it.each(['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])(
 
     expect(
       screen.getByText(
-        'Supports fixed-price models billed per request or per image. This user-specific price takes priority when this user calls the model.'
+        'Supports fixed prices per request or per image. The private unit price takes priority for this user with these billing methods. Other billing rules remain unchanged.'
       )
     ).toBeVisible()
     await user.type(screen.getByPlaceholderText('秘价，例如 0.001'), '0.004')

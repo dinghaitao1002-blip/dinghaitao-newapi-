@@ -7363,6 +7363,6 @@
     "Per-request pricing": "Tính phí theo yêu cầu",
     "Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode.": "Có thể lưu trực tiếp giá theo token và theo yêu cầu. Biểu thức giá vẫn là chế độ nâng cao tùy chọn.",
     "Select a fixed-price model": "Chọn mô hình có giá cố định",
-    "Supports fixed-price models billed per request or per image. This user-specific price takes priority when this user calls the model.": "Hỗ trợ các mô hình có giá cố định tính theo yêu cầu hoặc theo ảnh. Giá riêng này được ưu tiên khi người dùng gọi mô hình."
+    "Supports fixed prices per request or per image. The private unit price takes priority for this user with these billing methods. Other billing rules remain unchanged.": "Hỗ trợ giá cố định theo yêu cầu hoặc theo ảnh. Đơn giá riêng được ưu tiên cho người dùng này khi sử dụng các phương thức tính phí này. Các quy tắc tính phí khác không thay đổi."
   }
 }

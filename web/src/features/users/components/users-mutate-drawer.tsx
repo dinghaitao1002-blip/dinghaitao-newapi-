@@ -747,7 +747,7 @@ export function UsersMutateDrawer({
                   <h3 className='text-sm font-medium'>{t('模型秘价设置')}</h3>
                   <p className='text-muted-foreground text-xs'>
                     {t(
-                      'Supports fixed-price models billed per request or per image. This user-specific price takes priority when this user calls the model.'
+                      'Supports fixed prices per request or per image. The private unit price takes priority for this user with these billing methods. Other billing rules remain unchanged.'
                     )}
                   </p>
 

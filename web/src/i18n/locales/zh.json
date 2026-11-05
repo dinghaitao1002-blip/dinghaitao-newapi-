@@ -7377,6 +7377,6 @@
     "Per-request pricing": "按次计费",
     "Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode.": "按 Token 和按次计费均可直接设置并保存；计费表达式保留为可选的高级方式。",
     "Select a fixed-price model": "选择固定价模型",
-    "Supports fixed-price models billed per request or per image. This user-specific price takes priority when this user calls the model.": "支持按次或按张固定价格模型。设置后，该用户调用此模型会优先使用这里的专属价格。"
+    "Supports fixed prices per request or per image. The private unit price takes priority for this user with these billing methods. Other billing rules remain unchanged.": "支持按次或按张固定价。该用户使用这些计费方式时优先使用专属单价，其他计费规则保持不变。"
   }
 }

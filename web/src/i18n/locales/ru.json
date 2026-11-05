@@ -7363,6 +7363,6 @@
     "Per-request pricing": "Оплата за запрос",
     "Token and per-request pricing can be saved directly. Expression pricing remains available as an optional advanced mode.": "Цены за токены и за запрос сохраняются напрямую. Выражения доступны как дополнительный расширенный режим.",
     "Select a fixed-price model": "Выберите модель с фиксированной ценой",
-    "Supports fixed-price models billed per request or per image. This user-specific price takes priority when this user calls the model.": "Поддерживаются модели с фиксированной ценой за запрос или изображение. При вызове модели этим пользователем приоритет имеет его индивидуальная цена."
+    "Supports fixed prices per request or per image. The private unit price takes priority for this user with these billing methods. Other billing rules remain unchanged.": "Поддерживаются фиксированные цены за запрос или изображение. При этих способах оплаты для данного пользователя приоритет имеет индивидуальная цена за единицу. Остальные правила оплаты остаются без изменений."
   }
 }
