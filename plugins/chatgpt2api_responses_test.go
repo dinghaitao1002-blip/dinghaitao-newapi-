@@ -251,6 +251,7 @@ func TestChatgpt2apiClaimsPlainModelsBackgroundOnly(t *testing.T) {
 		"gpt-image-2", "gpt-image-auto", "codex-gpt-image-2",
 		"plus-codex-gpt-image-2", "team-codex-gpt-image-2", "pro-codex-gpt-image-2",
 		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+		"gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
 	}, plugin.Meta.Models)
 	for _, model := range plugin.Meta.Models {
 		binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
