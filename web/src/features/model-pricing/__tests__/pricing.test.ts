@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, it } from 'vitest'
 
+import { evaluateBillingExpression } from '@/features/pricing/lib/billing-expression/runtime'
+
 import { buildPricingChanges, type ModelPricingConfig } from '../api'
 import {
   applyPriceSyncSelections,
@@ -26,6 +28,114 @@ import {
   pricingOptions,
   pricingRow,
 } from '../pricing'
+import {
+  sharedImageUnitPrice,
+  sharedImagePricingDraft,
+} from '../shared-image-pricing'
+
+const imageProvider = {
+  plugin_key: 'chatgpt2api',
+  plugin_name: 'ChatGPT2API',
+  usage_schema: {
+    image_count: { type: 'number' as const, unit: 'count' as const },
+  },
+  configured: 'tier("base", u("image_count") * 0.007)',
+  effective: 'tier("base", u("image_count") * 0.007)',
+  compatible: true,
+}
+const imageDraft = {
+  name: 'gpt-image-2.6-sunburst',
+  billingMode: 'tiered_expr' as const,
+  billingExpr: 'tier("image", fixed(0.007)) * image_count',
+  pluginBillingExpr: { chatgpt2api: imageProvider.configured },
+}
+
+describe('shared image unit prices', () => {
+  it('recognizes only matching unconditional image prices, including explicit zero', () => {
+    expect(sharedImageUnitPrice(imageDraft, [imageProvider])).toBe(0.007)
+    expect(
+      sharedImageUnitPrice(
+        {
+          ...imageDraft,
+          billingExpr: 'image_count * tier("image", fixed(0.007))',
+          pluginBillingExpr: { chatgpt2api: '0.007 * u("image_count")' },
+        },
+        [imageProvider]
+      )
+    ).toBe(0.007)
+    const free = sharedImagePricingDraft(imageDraft, 0)
+    expect(
+      sharedImageUnitPrice(free, [
+        {
+          ...imageProvider,
+          configured: free.pluginBillingExpr?.chatgpt2api ?? '',
+        },
+      ])
+    ).toBe(0)
+    for (const draft of [
+      {
+        ...imageDraft,
+        pluginBillingExpr: {
+          chatgpt2api: 'tier("base", u("image_count") * 0.01)',
+        },
+      },
+      {
+        ...imageDraft,
+        billingExpr:
+          'true ? tier("image", fixed(0.007)) * image_count : tier("free", fixed(0)) * image_count',
+      },
+      {
+        ...imageDraft,
+        requestRuleExpr: 'when(param("quality") == "high") * 2',
+      },
+      {
+        ...imageDraft,
+        pluginBillingExpr: {
+          chatgpt2api: 'tier("base", 0.1 + u("image_count") * 0.007)',
+        },
+      },
+      { ...imageDraft, billingExpr: 'tier("base", p * 2 + c * 8)' },
+      { ...imageDraft, billingMode: 'video_per_second' as const },
+    ]) {
+      expect(sharedImageUnitPrice(draft, [imageProvider])).toBeNull()
+    }
+    expect(
+      sharedImageUnitPrice(imageDraft, [
+        imageProvider,
+        { ...imageProvider, plugin_key: 'other' },
+      ])
+    ).toBeNull()
+  })
+
+  it('generates matching one-image and two-image prices without dropping other provider drafts', () => {
+    const draft = sharedImagePricingDraft(
+      {
+        ...imageDraft,
+        pluginBillingExpr: {
+          ...imageDraft.pluginBillingExpr,
+          other: 'u("seconds") * 0.4',
+        },
+      },
+      0.02
+    )
+    expect(draft.pluginBillingExpr?.other).toBe('u("seconds") * 0.4')
+    for (const count of [1, 2]) {
+      const ordinary = evaluateBillingExpression(draft.billingExpr ?? '', {
+        imageCount: count,
+      })
+      const task = evaluateBillingExpression(
+        draft.pluginBillingExpr?.chatgpt2api ?? '',
+        { usage: { image_count: count } }
+      )
+      expect(ordinary.status).toBe('success')
+      expect(task.status).toBe('success')
+      if (ordinary.status === 'success' && task.status === 'success') {
+        expect(ordinary.cost / 1_000_000).toBeCloseTo(0.02 * count)
+        expect(task.cost).toBeCloseTo(0.02 * count)
+      }
+    }
+  })
+})
 
 describe('shared model pricing', () => {
   it('preserves explicit zero prices and cache-write configuration', () => {

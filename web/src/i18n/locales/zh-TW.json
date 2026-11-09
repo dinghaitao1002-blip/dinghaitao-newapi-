@@ -1,5 +1,8 @@
 {
   "translation": {
+    "Shared price for synchronous and asynchronous images": "同步、非同步共用單價",
+    "One price per image applies to both synchronous and asynchronous requests.": "同步與非同步請求使用相同的每張圖片價格。",
+    "Advanced pricing": "進階定價",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

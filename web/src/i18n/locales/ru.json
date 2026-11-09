@@ -1,5 +1,8 @@
 {
   "translation": {
+    "Shared price for synchronous and asynchronous images": "Единая цена синхронных и асинхронных изображений",
+    "One price per image applies to both synchronous and asynchronous requests.": "Одна цена за изображение применяется к синхронным и асинхронным запросам.",
+    "Advanced pricing": "Расширенные цены",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

@@ -52,6 +52,7 @@ type TaskPluginPricingEditorProps = {
   modelBillingMode?: 'ratio' | 'tiered_expr'
   currency: PricingCurrency
   children: ReactNode
+  sharedPricingEditor?: ReactNode
   ordinaryPricing?: boolean
   onConfigureOrdinaryPricing?: () => void
 }
@@ -77,6 +78,7 @@ export function TaskPluginPricingEditor(props: TaskPluginPricingEditorProps) {
     return props.modelExpression === variant.effective && !variant.compatible
   })
 
+  if (props.sharedPricingEditor) return props.sharedPricingEditor
   if (props.variants.length === 0) return props.children
 
   return (

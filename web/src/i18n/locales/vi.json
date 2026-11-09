@@ -1,5 +1,8 @@
 {
   "translation": {
+    "Shared price for synchronous and asynchronous images": "Đơn giá chung cho ảnh đồng bộ và bất đồng bộ",
+    "One price per image applies to both synchronous and asynchronous requests.": "Cùng một đơn giá mỗi ảnh áp dụng cho yêu cầu đồng bộ và bất đồng bộ.",
+    "Advanced pricing": "Định giá nâng cao",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

@@ -49,6 +49,118 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+it.each(['0.02', '0'])(
+  'saves shared synchronous and asynchronous image price %s in one versioned update',
+  async (amount) => {
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 1, username: 'administrator', role: 100 })
+    usePricingPreferencesStore.setState({ currency: 'USD' })
+    const providerExpression = 'tier("base", u("image_count") * 0.007)'
+    const values = {
+      'billing_setting.billing_mode': 'tiered_expr',
+      'billing_setting.billing_expr':
+        'tier("image", fixed(0.007)) * image_count',
+      'billing_setting.plugin_billing_expr': {
+        chatgpt2api: providerExpression,
+      },
+      CacheRatio: 0.25,
+      ModelPrice: 0.005,
+    }
+    const snapshot: ModelPricingConfig = {
+      entries: [
+        {
+          model_name: 'gpt-image-2.6-sunburst',
+          version: 'shared-image-version',
+          configured: values,
+          effective: values,
+          plugin_variants: [
+            {
+              plugin_key: 'chatgpt2api',
+              plugin_name: 'ChatGPT2API',
+              usage_schema: {
+                image_count: {
+                  type: 'number',
+                  unit: 'count',
+                  unitLabel: { en: 'image' },
+                },
+              },
+              configured: providerExpression,
+              effective: providerExpression,
+              compatible: true,
+            },
+          ],
+        },
+      ],
+      options: pricingOptions({}),
+      empty_version: 'empty',
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/option/model_pricing') {
+        return { data: { success: true, data: snapshot } }
+      }
+      return { data: { success: true, data: [], vendors: [] } }
+    })
+    const save = vi
+      .spyOn(api, 'patch')
+      .mockResolvedValue({ data: { success: true } })
+    client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ModelPricingPanel modelName='gpt-image-2.6-sunburst' />
+      </QueryClientProvider>
+    )
+    const user = userEvent.setup()
+    const price = await screen.findByRole('textbox', {
+      name: 'Shared price for synchronous and asynchronous images',
+    })
+    expect(price).toHaveValue('0.007')
+    expect(
+      screen.queryByRole('tab', { name: 'ChatGPT2API' })
+    ).not.toBeInTheDocument()
+    await user.clear(price)
+    await user.click(screen.getByRole('button', { name: 'Save model prices' }))
+    expect(save).not.toHaveBeenCalled()
+    await user.type(price, '.')
+    await user.click(screen.getByRole('button', { name: 'Save model prices' }))
+    expect(save).not.toHaveBeenCalled()
+    await user.clear(price)
+    await user.type(price, amount)
+    await user.click(screen.getByRole('button', { name: 'Save model prices' }))
+    await waitFor(() => expect(save).toHaveBeenCalled())
+    expect(save.mock.calls[0][1]).toEqual({
+      changes: [
+        {
+          model_name: 'gpt-image-2.6-sunburst',
+          expected_version: 'shared-image-version',
+          pricing: {
+            ...values,
+            'billing_setting.billing_expr': `tier("image", fixed(${amount})) * image_count`,
+            'billing_setting.plugin_billing_expr': {
+              chatgpt2api: `tier("image", u("image_count") * ${amount})`,
+            },
+          },
+          reset: false,
+        },
+      ],
+    })
+    await user.click(screen.getByRole('button', { name: 'Advanced pricing' }))
+    expect(
+      screen.queryByRole('textbox', {
+        name: 'Shared price for synchronous and asynchronous images',
+      })
+    ).not.toBeInTheDocument()
+    expect(
+      await screen.findByRole('tab', { name: 'ChatGPT2API' })
+    ).toBeVisible()
+  }
+)
+
 it('keeps provider drafts across tabs and saves nested expressions with the model version', async () => {
   useAuthStore
     .getState()
@@ -332,6 +444,48 @@ function renderEditor(
   )
   return { ref, dirty }
 }
+
+it('rejects empty, incomplete and overflowing shared amounts through commitDraft while allowing explicit zero', async () => {
+  const expression = 'tier("image", u("image_count") * 0.007)'
+  const { ref } = renderEditor(
+    {
+      name: 'gpt-image-2.6-flare',
+      billingMode: 'tiered_expr',
+      billingExpr: 'tier("image", fixed(0.007)) * image_count',
+      pluginBillingExpr: { chatgpt2api: expression },
+    },
+    [
+      {
+        plugin_key: 'chatgpt2api',
+        plugin_name: 'ChatGPT2API',
+        usage_schema: { image_count: { type: 'number', unit: 'count' } },
+        configured: expression,
+        effective: expression,
+        compatible: true,
+      },
+    ]
+  )
+  const user = userEvent.setup()
+  const input = screen.getByRole('textbox', {
+    name: 'Shared price for synchronous and asynchronous images',
+  })
+  await user.clear(input)
+  await act(async () => expect(await ref.current?.commitDraft()).toBeNull())
+  for (const value of ['.', '9'.repeat(303)]) {
+    await user.clear(input)
+    await user.type(input, value)
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    await act(async () => expect(await ref.current?.commitDraft()).toBeNull())
+  }
+  await user.clear(input)
+  await user.type(input, '0')
+  await act(async () =>
+    expect(await ref.current?.commitDraft()).toMatchObject({
+      billingExpr: 'tier("image", fixed(0)) * image_count',
+      pluginBillingExpr: { chatgpt2api: 'tier("image", u("image_count") * 0)' },
+    })
+  )
+})
 
 it.each([
   {

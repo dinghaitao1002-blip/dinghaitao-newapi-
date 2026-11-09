@@ -80,6 +80,11 @@ import {
   type PricingConversionPreview,
 } from '@/features/model-pricing/pricing-conversion-dialog'
 import { PricingCurrencySelector } from '@/features/model-pricing/pricing-currency-selector'
+import {
+  isValidSharedImagePrice,
+  sharedImagePricingDraft,
+  sharedImageUnitPrice,
+} from '@/features/model-pricing/shared-image-pricing'
 import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
 import { combineBillingExpr } from '@/features/pricing/lib/billing-expr'
 import { pluginExpressionsEqual } from '@/features/pricing/lib/plugin-pricing'
@@ -270,6 +275,13 @@ export const ModelPricingEditorPanel = forwardRef<
 ) {
   const { t } = useTranslation()
   const promptPriceId = useId()
+  const sharedImagePriceId = useId()
+  const initialSharedImagePrice = sharedImageUnitPrice(editData, pluginVariants)
+  const [advancedImagePricing, setAdvancedImagePricing] = useState(false)
+  const [sharedImagePrice, setSharedImagePrice] = useState('')
+  const usesSharedImagePricing =
+    initialSharedImagePrice !== null && !advancedImagePricing
+  const sharedImagePriceInvalid = !isValidSharedImagePrice(sharedImagePrice)
   const formElementRef = useRef<HTMLFormElement>(null)
   const currencyConfig = useSystemConfigStore((state) => state.config.currency)
   const preference = usePricingPreferencesStore((state) => state.currency)
@@ -476,6 +488,10 @@ export const ModelPricingEditorPanel = forwardRef<
     conversionGeneration.current += 1
     setConversionReason('')
     setPluginExpressions(editData?.pluginBillingExpr ?? {})
+    setSharedImagePrice(
+      initialSharedImagePrice === null ? '' : String(initialSharedImagePrice)
+    )
+    setAdvancedImagePricing(false)
     setOrdinaryPricingModel(null)
     setWasConverted(false)
     setConversionPreview(null)
@@ -536,7 +552,13 @@ export const ModelPricingEditorPanel = forwardRef<
     setVideoResolutionEnabled(nextVideoResolutionEnabled)
     setEditorReloadToken((token) => token + 1)
     autoSwitchedForRef.current = null
-  }, [editData, form, initialPricingMode, initialBillingExpr])
+  }, [
+    editData,
+    form,
+    initialPricingMode,
+    initialBillingExpr,
+    initialSharedImagePrice,
+  ])
 
   useEffect(() => {
     if (!editData) return
@@ -560,6 +582,8 @@ export const ModelPricingEditorPanel = forwardRef<
   useEffect(() => {
     onDirtyChange?.(
       form.formState.isDirty ||
+        (usesSharedImagePricing &&
+          sharedImagePrice !== String(initialSharedImagePrice)) ||
         (pricingMode === 'image_quality' &&
           JSON.stringify(imageQualityPriceDraft) !==
             JSON.stringify(savedImageQualityPriceDraft)) ||
@@ -580,6 +604,9 @@ export const ModelPricingEditorPanel = forwardRef<
     initialPricingMode,
     initialBillingExpr,
     pluginExpressions,
+    usesSharedImagePricing,
+    sharedImagePrice,
+    initialSharedImagePrice,
   ])
 
   const setFormValue = (field: keyof ModelPricingFormValues, value: string) => {
@@ -968,6 +995,9 @@ export const ModelPricingEditorPanel = forwardRef<
         data.billingExpr = JSON.stringify(videoPrices)
       }
 
+      if (usesSharedImagePricing) {
+        return sharedImagePricingDraft(data, Number(sharedImagePrice))
+      }
       return data
     },
     [
@@ -978,6 +1008,8 @@ export const ModelPricingEditorPanel = forwardRef<
       editData,
       pluginVariants,
       videoResolutionEnabled,
+      usesSharedImagePricing,
+      sharedImagePrice,
     ]
   )
 
@@ -1056,6 +1088,12 @@ export const ModelPricingEditorPanel = forwardRef<
     () => ({
       commitDraft: async () => {
         if (
+          usesSharedImagePricing &&
+          !isValidSharedImagePrice(sharedImagePrice)
+        ) {
+          return null
+        }
+        if (
           formElementRef.current?.querySelector('[data-billing-invalid="true"]')
         ) {
           return null
@@ -1086,6 +1124,8 @@ export const ModelPricingEditorPanel = forwardRef<
       buildSubmitData,
       pricingMode,
       saveImageQualityPricing,
+      usesSharedImagePricing,
+      sharedImagePrice,
     ]
   )
 
@@ -1137,6 +1177,65 @@ export const ModelPricingEditorPanel = forwardRef<
         onRequestRuleExprChange={setRequestRuleExpr}
       />
     )
+
+  const sharedPricingEditor = usesSharedImagePricing ? (
+    <FieldGroup>
+      <Field>
+        <FieldLabel htmlFor={sharedImagePriceId}>
+          {t('Shared price for synchronous and asynchronous images')}
+        </FieldLabel>
+        <InputGroup>
+          <InputGroupAddon>{currency.symbol}</InputGroupAddon>
+          <PricingAmountInput
+            id={sharedImagePriceId}
+            currency={currency}
+            grouped
+            required
+            aria-invalid={sharedImagePriceInvalid || undefined}
+            data-billing-invalid={sharedImagePriceInvalid || undefined}
+            value={sharedImagePrice}
+            onChange={(value) => {
+              setSharedImagePrice(value)
+              if (!isValidSharedImagePrice(value)) {
+                return
+              }
+              const draft = sharedImagePricingDraft(
+                {
+                  name: watchedValues.name,
+                  pluginBillingExpr: pluginExpressions,
+                },
+                Number(value)
+              )
+              setBillingExpr(draft.billingExpr ?? '')
+              setPluginExpressions(draft.pluginBillingExpr ?? {})
+            }}
+          />
+          <InputGroupAddon align='inline-end'>/ {t('image')}</InputGroupAddon>
+        </InputGroup>
+        {sharedImagePriceInvalid && (
+          <p role='alert' className='text-destructive text-xs'>
+            {t('Enter a finite, non-negative price')}
+          </p>
+        )}
+        <FieldDescription>
+          {t(
+            'One price per image applies to both synchronous and asynchronous requests.'
+          )}
+        </FieldDescription>
+      </Field>
+      <Button
+        type='button'
+        variant='outline'
+        className='w-fit'
+        onClick={() => {
+          setAdvancedImagePricing(true)
+          setOrdinaryPricingModel(watchedValues.name)
+        }}
+      >
+        {t('Advanced pricing')}
+      </Button>
+    </FieldGroup>
+  ) : undefined
 
   const showActions = Boolean(onSave)
 
@@ -1219,6 +1318,7 @@ export const ModelPricingEditorPanel = forwardRef<
                 <PricingCurrencySelector siteCurrency={siteCurrency} />
 
                 <TaskPluginPricingEditor
+                  sharedPricingEditor={sharedPricingEditor}
                   key={`${editorReloadToken}:${watchedValues.name}`}
                   variants={pluginVariants ?? []}
                   expressions={pluginExpressions}
@@ -1758,7 +1858,9 @@ export const ModelPricingEditorPanel = forwardRef<
               >
                 <div className='border-b px-3 py-2'>
                   <div className='text-sm font-medium'>
-                    {!usesTaskPricing && pluginVariants?.length ? (
+                    {!usesSharedImagePricing &&
+                    !usesTaskPricing &&
+                    pluginVariants?.length ? (
                       <>{t('Ordinary OpenAI')} · </>
                     ) : null}
                     {t('Preview')}
