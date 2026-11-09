@@ -55,7 +55,7 @@ func flow2apiJSON(t *testing.T, value any) map[string]any {
 
 func TestFlow2apiDeclaresFlowModelsWithoutLegacyChannelTypes(t *testing.T) {
 	plugin := loadFlow2apiPlugin(t)
-	assert.Equal(t, []string{"veo-3.1-lite", "veo-3.1-fast", "veo-3.1-quality", "omni-1.1-flash"}, plugin.Meta.Models)
+	assert.Equal(t, []string{"veo-3.1-lite", "veo-3.1-fast", "veo-3.1-quality", "omni-1.1-flash", "omni-1.2-flash"}, plugin.Meta.Models)
 	// The OpenAI channel type belongs to sora; flow2api lives on Task Plugin channels.
 	assert.Empty(t, plugin.Meta.ChannelTypes)
 }

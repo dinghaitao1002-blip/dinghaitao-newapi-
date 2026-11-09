@@ -19,7 +19,7 @@
 // cost the same), so `seconds` is the usage quantity; `resolution` is kept
 // as an enum condition for operators who want to price 1080p separately.
 
-const VIDEO_MODELS = ["veo-3.1-lite", "veo-3.1-fast", "veo-3.1-quality", "omni-1.1-flash"];
+const VIDEO_MODELS = ["veo-3.1-lite", "veo-3.1-fast", "veo-3.1-quality", "omni-1.1-flash", "omni-1.2-flash"];
 const DEFAULT_SECONDS = 8;
 const MAX_SECONDS = 3600;
 
@@ -28,11 +28,11 @@ export const meta = {
   key: "flow2api",
   name: "Flow2API",
   icon: "text:F2",
-  version: "1.1.0",
+  version: "1.2.0",
   author: { name: "keyirobot" },
   description: {
-    en: "Google Flow video generation through a flow2api gateway (Veo 3.1, Omni 1.1 Flash)",
-    zh: "通过 flow2api 网关生成 Google Flow 视频（Veo 3.1、Omni 1.1 Flash）",
+    en: "Google Flow video generation through a flow2api gateway (Veo 3.1, Omni 1.1 / 1.2 Flash)",
+    zh: "通过 flow2api 网关生成 Google Flow 视频（Veo 3.1、Omni 1.1 / 1.2 Flash）",
   },
   models: VIDEO_MODELS,
   fetchMode: "per_task",
