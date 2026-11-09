@@ -3,8 +3,12 @@
 // flow2api (a Google Flow gateway) serves /v1/videos with the OpenAI task
 // shape: POST {baseUrl}/v1/videos -> {id, status: "queued"}, then
 // GET {baseUrl}/v1/videos/{id} until status is completed / failed. A completed
-// task carries the public CDN `url` of the clip; flow2api has no id-based
-// content route, so the artifact is fetched from that URL without credentials.
+// task carries the public CDN `url` of the clip (signed, expires after about
+// six hours). That link is the only download path: the plugin projects no
+// artifacts and leaves the task result URL unset, so the gateway's id-based
+// content routes (/v1/videos/{id}/content, /v1/tasks/{id}/artifacts/...)
+// answer "gone" instead of proxying the clip. Clients read `url` from
+// GET /v1/videos/{id}, and the Responses renderers embed the same link.
 //
 // The request body is forwarded verbatim: flow2api reads `duration` / `seconds`,
 // `aspect_ratio`, `resolution` (720p / 1080p) or a Sora-style `size`, and
@@ -24,7 +28,7 @@ export const meta = {
   key: "flow2api",
   name: "Flow2API",
   icon: "text:F2",
-  version: "1.0.0",
+  version: "1.1.0",
   author: { name: "keyirobot" },
   description: {
     en: "Google Flow video generation through a flow2api gateway (Veo 3.1, Omni 1.1 Flash)",
@@ -136,10 +140,9 @@ function responsesInput(req) {
   };
 }
 
-function responsesVideoText(ctx) {
-  const artifact = ctx && ctx.artifacts && ctx.artifacts.video;
-  const url = trimmed(artifact && artifact.url);
-  if (!url) throw new Error("video artifact is unavailable");
+function responsesVideoText(task) {
+  const url = trimmed(task && isObject(task.data) && task.data.url);
+  if (!url) throw new Error("video url is unavailable");
   const escaped = url.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return '<video controls src="' + escaped + '"></video>';
 }
@@ -193,20 +196,20 @@ export function parseTaskResult(ctx, body) {
   }
   const progress = Number(data.progress);
   if (Number.isFinite(progress) && progress > 0 && progress < 100) result.progress = progress + "%";
-  if (mapped === "SUCCESS" && trimmed(data.url)) result.url = trimmed(data.url);
+  // The clip URL stays only in task.data; setting result.url would let the
+  // gateway proxy it through the id-based content route.
   if (mapped === "FAILURE") result.reason = (isObject(data.error) && trimmed(data.error.message)) || "video generation failed";
   return result;
 }
 
-export function listArtifacts(task) {
-  return task.status === "SUCCESS" ? [{ key: "video", type: "video" }] : [];
+// openai_video requires both hooks. No artifacts are projected, so the host
+// never asks for content; buildContentRequest refuses if it ever does.
+export function listArtifacts() {
+  return [];
 }
 
-export function buildContentRequest(ctx) {
-  if (ctx.artifactKey !== "video") throw new Error("artifact_not_found");
-  const url = trimmed(isObject(ctx.data) && ctx.data.url);
-  if (!url) throw new Error("video url is unavailable");
-  return { url: url, method: ctx.clientRequest.method, credentialless: true };
+export function buildContentRequest() {
+  throw new Error("id-based download is disabled; download the video from the url returned by GET /v1/videos/{id}");
 }
 
 export const protocols = {
@@ -240,7 +243,7 @@ export const protocols = {
       const progress = Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
       const state = { status: status, progress: progress };
       if (status === "SUCCESS") {
-        const text = responsesVideoText(ctx);
+        const text = responsesVideoText(task);
         const events = previousState && previousState.status === status ? [] : [{ type: "output", data: text }];
         return { events: events, state: state, done: true };
       }
@@ -251,14 +254,14 @@ export const protocols = {
       if (progress !== null) event.progress = progress;
       return { events: [event], state: state, done: false };
     },
-    renderFinal: function (ctx, _task) {
+    renderFinal: function (_ctx, task) {
       return {
         output: [
           {
             type: "message",
             status: "completed",
             role: "assistant",
-            content: [{ type: "output_text", text: responsesVideoText(ctx), annotations: [], logprobs: [] }],
+            content: [{ type: "output_text", text: responsesVideoText(task), annotations: [], logprobs: [] }],
           },
         ],
         metadata: { vendor: "flow2api" },

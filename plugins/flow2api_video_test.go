@@ -31,6 +31,7 @@ func TestFlow2apiResponsesProtocol(t *testing.T) {
 		},
 		wantUsageKeys:  []string{"seconds", "resolution"},
 		wantVendorName: "flow2api",
+		directVideoURL: true,
 	})
 }
 
@@ -133,7 +134,7 @@ func TestFlow2apiUsageFacts(t *testing.T) {
 	}
 }
 
-func TestFlow2apiParseTaskResultMapsStatusesAndKeepsURL(t *testing.T) {
+func TestFlow2apiParseTaskResultMapsStatuses(t *testing.T) {
 	plugin := loadFlow2apiPlugin(t)
 	call := func(body map[string]any) map[string]any {
 		value, err := plugin.Engine.Call(t.Context(), "parseTaskResult", map[string]any{"taskId": "video_1"}, body, map[string]any{"status": 200})
@@ -146,7 +147,8 @@ func TestFlow2apiParseTaskResultMapsStatusesAndKeepsURL(t *testing.T) {
 
 	done := call(map[string]any{"id": "video_1", "status": "completed", "progress": 100, "url": "https://flow-content.google/video/abc?sig=1"})
 	assert.Equal(t, "SUCCESS", done["status"])
-	assert.Equal(t, "https://flow-content.google/video/abc?sig=1", done["url"])
+	// No result URL: the gateway would otherwise proxy it on the id-based content route.
+	assert.NotContains(t, done, "url")
 
 	failed := call(map[string]any{"id": "video_1", "status": "failed", "error": map[string]any{"message": "生成失败: USER_MINOR"}})
 	assert.Equal(t, "FAILURE", failed["status"])
@@ -156,24 +158,20 @@ func TestFlow2apiParseTaskResultMapsStatusesAndKeepsURL(t *testing.T) {
 	assert.Equal(t, "UNKNOWN", unknown["status"])
 }
 
-// flow2api serves no id-based content route; the artifact is the public CDN
-// link in task.data, fetched without credentials.
-func TestFlow2apiContentRequestUsesResultURL(t *testing.T) {
+// Id-based download is disabled: no artifacts are projected, and the content
+// hook refuses, so clients can only use the public url from GET /v1/videos/{id}.
+func TestFlow2apiDisablesIDBasedDownload(t *testing.T) {
 	plugin := loadFlow2apiPlugin(t)
-	value, err := plugin.Engine.Call(t.Context(), "buildContentRequest", map[string]any{
-		"artifactKey": "video", "upstreamTaskId": "video_1", "baseUrl": "http://flow2api:8000", "apiKey": "flow-key",
-		"data":          map[string]any{"url": "https://flow-content.google/video/abc?sig=1"},
-		"clientRequest": map[string]any{"method": "GET", "headers": map[string]any{}},
-	})
-	require.NoError(t, err)
-	descriptor := flow2apiJSON(t, value)
-	assert.Equal(t, "https://flow-content.google/video/abc?sig=1", descriptor["url"])
-	assert.Equal(t, true, descriptor["credentialless"])
-	assert.Nil(t, descriptor["headers"])
-
 	artifacts, err := plugin.Engine.Call(t.Context(), "listArtifacts", map[string]any{"taskId": "video_1", "status": "SUCCESS", "action": "text_to_video", "data": map[string]any{"url": "https://x"}})
 	require.NoError(t, err)
 	encoded, err := common.Marshal(artifacts)
 	require.NoError(t, err)
-	assert.JSONEq(t, `[{"key":"video","type":"video"}]`, string(encoded))
+	assert.JSONEq(t, `[]`, string(encoded))
+
+	_, err = plugin.Engine.Call(t.Context(), "buildContentRequest", map[string]any{
+		"artifactKey": "video", "upstreamTaskId": "video_1", "baseUrl": "http://flow2api:8000", "apiKey": "flow-key",
+		"data":          map[string]any{"url": "https://flow-content.google/video/abc?sig=1"},
+		"clientRequest": map[string]any{"method": "GET", "headers": map[string]any{}},
+	})
+	require.ErrorContains(t, err, "id-based download is disabled")
 }
