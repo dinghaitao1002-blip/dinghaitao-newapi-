@@ -643,6 +643,21 @@ func TestAcceptedSubmitStreamNeverRetries(t *testing.T) {
 	assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "task_accepted", Source: "system"}, decideTaskRetry(c, &dto.TaskError{StatusCode: 502, LocalError: true, NoRetry: true}, 3))
 }
 
+func TestTaskSubmissionInputSizeRejectionNeverRetries(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   service.PolicyDecision
+	}{
+		{status: http.StatusRequestEntityTooLarge, want: service.PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}},
+		{status: http.StatusBadGateway, want: service.PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "system"}},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			c := taskSubmissionTestContext()
+			assert.Equal(t, tc.want, decideTaskRetry(c, &dto.TaskError{StatusCode: tc.status, Code: "fail_to_fetch_task"}, 3))
+		})
+	}
+}
+
 // Local task rejections carry a message but no cause; the response and the
 // decision record must still be produced.
 func TestRespondTaskSubmissionErrorWithoutCause(t *testing.T) {

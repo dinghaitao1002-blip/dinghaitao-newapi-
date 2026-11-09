@@ -84,7 +84,21 @@ func ClaudeErrorWrapperLocal(err error, code string, statusCode int) *dto.Claude
 	return claudeErr
 }
 
+// Confirmed input-size failures cannot be fixed by replaying the same request.
+// Use structured codes, never provider message text, to recognize them.
+func normalizeInputSizeError(apiErr *types.NewAPIError) bool {
+	if apiErr == nil {
+		return false
+	}
+	switch apiErr.GetErrorCode() {
+	case "input_too_large", "upstream_request_too_large":
+		apiErr.StatusCode = http.StatusRequestEntityTooLarge
+	}
+	return apiErr.StatusCode == http.StatusRequestEntityTooLarge
+}
+
 func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFail bool) (newApiErr *types.NewAPIError) {
+	defer func() { normalizeInputSizeError(newApiErr) }()
 	newApiErr = types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
 
 	responseBody, err := io.ReadAll(resp.Body)
@@ -138,7 +152,7 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 }
 
 func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) {
-	if newApiErr == nil {
+	if newApiErr == nil || normalizeInputSizeError(newApiErr) {
 		return
 	}
 	if statusCodeMappingStr == "" || statusCodeMappingStr == "{}" {

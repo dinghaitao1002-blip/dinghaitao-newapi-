@@ -1,8 +1,10 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -15,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
@@ -383,6 +386,83 @@ func TestRelayTimeoutFailoverPreservesAsyncAndOutputBoundaries(t *testing.T) {
 			}
 			err := types.NewErrorWithStatusCode(context.DeadlineExceeded, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
 			assert.Equal(t, tc.wantRetry, ShouldRetryRelayError(c, err, 1))
+		})
+	}
+}
+
+func TestInputSizeErrorsPreserve413AndNeverRetry(t *testing.T) {
+	previousRetryRanges := operation_setting.AutomaticRetryStatusCodeRanges
+	t.Cleanup(func() { operation_setting.AutomaticRetryStatusCodeRanges = previousRetryRanges })
+
+	for _, policy := range []struct {
+		name   string
+		ranges []operation_setting.StatusCodeRange
+	}{
+		{name: "default", ranges: previousRetryRanges},
+		{name: "gateway only", ranges: []operation_setting.StatusCodeRange{{Start: 502, End: 502}}},
+		{name: "all errors", ranges: []operation_setting.StatusCodeRange{{Start: 400, End: 599}}},
+	} {
+		t.Run(policy.name, func(t *testing.T) {
+			operation_setting.AutomaticRetryStatusCodeRanges = policy.ranges
+			assert.False(t, operation_setting.ShouldRetryByStatusCode(http.StatusRequestEntityTooLarge))
+			for _, tc := range []struct {
+				name, code, message, mapping string
+				upstreamStatus, finalStatus  int
+				wantRetry                    bool
+			}{
+				{name: "input code on 400", code: "input_too_large", message: "Input exceeds the image service limit.", upstreamStatus: 400, finalStatus: 413},
+				{name: "upstream code on 502", code: "upstream_request_too_large", message: "Image generation failed.", upstreamStatus: 502, finalStatus: 413},
+				{name: "input code cannot map to 502", code: "input_too_large", message: "Input exceeds the image service limit.", upstreamStatus: 400, finalStatus: 413, mapping: `{"400":502,"413":502}`},
+				{name: "upstream code cannot map to 502", code: "upstream_request_too_large", message: "Image generation failed.", upstreamStatus: 502, finalStatus: 413, mapping: `{"502":502,"413":502}`},
+				{name: "actual 413 cannot map to 502", code: "upstream_error", message: "Payload rejected.", upstreamStatus: 413, finalStatus: 413, mapping: `{"413":502}`},
+				{name: "ordinary 502", code: "upstream_error", message: "Image generation failed.", upstreamStatus: 502, finalStatus: 502, wantRetry: true},
+				{name: "size words alone are not an input code", code: "upstream_error", message: "input_too_large: request too large", upstreamStatus: 502, finalStatus: 502, wantRetry: true},
+				{name: "context error is unchanged", code: "context_length_exceeded", message: "Maximum context length exceeded.", upstreamStatus: 502, finalStatus: 502, wantRetry: true},
+				{name: "ordinary status mapping is unchanged", code: "upstream_error", message: "Other request error.", upstreamStatus: 400, finalStatus: 502, mapping: `{"400":502}`, wantRetry: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					for _, mode := range []string{"sync", "async"} {
+						t.Run(mode, func(t *testing.T) {
+							c, _ := gin.CreateTestContext(httptest.NewRecorder())
+							c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", nil)
+							if mode == "async" {
+								c.Set(ImageAsyncTaskIDContextKey, "imgtask_test")
+							}
+							body, err := common.Marshal(gin.H{"error": types.OpenAIError{Code: tc.code, Message: tc.message, Type: "upstream_error"}})
+							require.NoError(t, err)
+							apiErr := RelayErrorHandler(c.Request.Context(), &http.Response{StatusCode: tc.upstreamStatus, Body: io.NopCloser(bytes.NewReader(body))}, false)
+							require.NotNil(t, apiErr)
+							if tc.finalStatus == http.StatusRequestEntityTooLarge {
+								assert.Equal(t, http.StatusRequestEntityTooLarge, apiErr.StatusCode, "normalize before channel mappings")
+							}
+							ResetStatusCode(apiErr, tc.mapping)
+							decision := DecideRelayRetry(c, apiErr, 2)
+							if tc.wantRetry {
+								assert.Equal(t, PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}, decision)
+							} else {
+								assert.Equal(t, PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}, decision)
+							}
+							assert.Equal(t, tc.finalStatus, apiErr.StatusCode)
+							assert.Equal(t, types.ErrorCode(tc.code), apiErr.GetErrorCode())
+							assert.Equal(t, tc.message, apiErr.Error())
+							assert.Equal(t, tc.code, apiErr.ToOpenAIError().Code)
+							assert.Equal(t, tc.message, apiErr.ToOpenAIError().Message)
+						})
+					}
+				})
+			}
+		})
+	}
+	for _, code := range []types.ErrorCode{"input_too_large", "upstream_request_too_large"} {
+		t.Run("direct error "+string(code), func(t *testing.T) {
+			apiErr := types.NewOpenAIError(errors.New("Image generation failed."), code, http.StatusBadGateway)
+			assert.Equal(t, "stop", DecideRelayRetry(nil, apiErr, 2).Action)
+			assert.Equal(t, http.StatusRequestEntityTooLarge, apiErr.StatusCode)
+			// Image adapters may find an error inside a successful HTTP body and
+			// skip retry before reaching the shared decision helper.
+			apiErr = types.NewOpenAIError(errors.New("Image generation failed."), code, http.StatusOK, types.ErrOptionWithSkipRetry())
+			ResetStatusCode(apiErr, "")
+			assert.Equal(t, http.StatusRequestEntityTooLarge, apiErr.StatusCode)
 		})
 	}
 }
