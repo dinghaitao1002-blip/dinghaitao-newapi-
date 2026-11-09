@@ -21,6 +21,9 @@ type videoResponsesTestCase struct {
 	wantUsageKeys       []string
 	wantSubmitUsageKeys []string
 	wantVendorName      string
+	// directVideoURL marks plugins whose Responses output embeds the upstream
+	// URL from task.data instead of the host artifact URL (no id-based download).
+	directVideoURL bool
 }
 
 func testVideoResponsesProtocol(t *testing.T, testCase videoResponsesTestCase) {
@@ -137,6 +140,11 @@ func testVideoResponsesProtocol(t *testing.T, testCase videoResponsesTestCase) {
 		},
 	}
 
+	wantURLHost, otherURLHost := "gateway.example", "upstream.example"
+	if testCase.directVideoURL {
+		wantURLHost, otherURLHost = otherURLHost, wantURLHost
+	}
+
 	t.Run("renders stream state transitions", func(t *testing.T) {
 		progressValue, callErr := plugin.Engine.CallPath(
 			t.Context(),
@@ -195,8 +203,8 @@ func testVideoResponsesProtocol(t *testing.T, testCase videoResponsesTestCase) {
 		assert.True(t, result.Done)
 		var text string
 		require.NoError(t, common.Unmarshal(result.Events[0].Data, &text))
-		assert.Contains(t, text, "gateway.example")
-		assert.NotContains(t, text, "upstream.example")
+		assert.Contains(t, text, wantURLHost)
+		assert.NotContains(t, text, otherURLHost)
 	})
 
 	t.Run("renders a valid final response", func(t *testing.T) {
@@ -224,21 +232,28 @@ func testVideoResponsesProtocol(t *testing.T, testCase videoResponsesTestCase) {
 		require.True(t, ok)
 		text, ok := part["text"].(string)
 		require.True(t, ok)
-		assert.Contains(t, text, "gateway.example")
-		assert.NotContains(t, text, "upstream.example")
+		assert.Contains(t, text, wantURLHost)
+		assert.NotContains(t, text, otherURLHost)
 		metadata, ok := response["metadata"].(map[string]string)
 		require.True(t, ok)
 		assert.Equal(t, testCase.wantVendorName, metadata["vendor"])
 	})
 
-	t.Run("requires a host artifact", func(t *testing.T) {
+	t.Run("requires a video URL", func(t *testing.T) {
+		missingContext, missingTask := map[string]any{"requestBody": map[string]any{"model": testCase.model}}, successTask
+		wantErr := "video artifact is unavailable"
+		if testCase.directVideoURL {
+			missingContext = protocolContext
+			missingTask = map[string]any{"task_id": "task_public", "status": "SUCCESS", "data": map[string]any{}}
+			wantErr = "video url is unavailable"
+		}
 		_, callErr := plugin.Engine.CallPath(
 			t.Context(),
 			"protocols",
 			[]string{"openai_responses", "renderFinal"},
-			map[string]any{"requestBody": map[string]any{"model": testCase.model}},
-			successTask,
+			missingContext,
+			missingTask,
 		)
-		require.ErrorContains(t, callErr, "video artifact is unavailable")
+		require.ErrorContains(t, callErr, wantErr)
 	})
 }
