@@ -1057,6 +1057,7 @@ type TaskSubmitReq struct {
 	Duration       int            `json:"duration,omitempty"`
 	Seconds        string         `json:"seconds,omitempty"`
 	Resolution     string         `json:"resolution,omitempty"`
+	AspectRatio    string         `json:"aspect_ratio,omitempty"` // forwarded as-is to OpenAI-compatible video upstreams; not billed
 	InputReference string         `json:"input_reference,omitempty"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
 }

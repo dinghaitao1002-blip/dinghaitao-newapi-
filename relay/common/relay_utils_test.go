@@ -1,12 +1,16 @@
 package common
 
 import (
+	"bytes"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -139,4 +143,94 @@ func TestTaskDurationBounds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTaskRequestForwardsResolutionAndAspectRatio guards the /v1/videos
+// contract for OpenAI-compatible video upstreams that take resolution and
+// aspect_ratio as top-level fields: the stored task request must keep both so
+// the upstream body carries them, and omit them when the client did not send
+// them.
+func TestTaskRequestForwardsResolutionAndAspectRatio(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name            string
+		body            string
+		wantResolution  string
+		wantAspectRatio string
+		wantInBody      []string
+		wantNotInBody   []string
+	}{
+		{
+			name:            "fields are kept and forwarded",
+			body:            `{"model":"veo-3.1-fast","prompt":"a cat","duration":8,"resolution":"4k","aspect_ratio":"16:9"}`,
+			wantResolution:  "4k",
+			wantAspectRatio: "16:9",
+			wantInBody:      []string{`"resolution":"4k"`, `"aspect_ratio":"16:9"`},
+		},
+		{
+			name:          "absent fields stay absent",
+			body:          `{"model":"veo-3.1-fast","prompt":"a cat","seconds":"8"}`,
+			wantNotInBody: []string{`"resolution"`, `"aspect_ratio"`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(tt.body))
+			request.Header.Set("Content-Type", "application/json")
+			context, _ := gin.CreateTestContext(httptest.NewRecorder())
+			context.Request = request
+			info := &RelayInfo{TaskRelayInfo: &TaskRelayInfo{}}
+
+			taskErr := ValidateBasicTaskRequest(context, info, constant.TaskActionTextToVideo)
+			require.Nil(t, taskErr)
+
+			storedReq, err := GetTaskRequest(context)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantResolution, storedReq.Resolution)
+			assert.Equal(t, tt.wantAspectRatio, storedReq.AspectRatio)
+
+			encoded, err := common.Marshal(storedReq)
+			require.NoError(t, err)
+			for _, fragment := range tt.wantInBody {
+				assert.Contains(t, string(encoded), fragment)
+			}
+			for _, fragment := range tt.wantNotInBody {
+				assert.NotContains(t, string(encoded), fragment)
+			}
+		})
+	}
+
+	t.Run("multipart form keeps the fields top-level", func(t *testing.T) {
+		var form bytes.Buffer
+		writer := multipart.NewWriter(&form)
+		for key, value := range map[string]string{
+			"model": "veo-3.1-fast", "prompt": "a cat", "seconds": "8",
+			"resolution": "1080p", "aspect_ratio": "9:16",
+		} {
+			require.NoError(t, writer.WriteField(key, value))
+		}
+		require.NoError(t, writer.Close())
+		formBytes := form.Bytes()
+		request := httptest.NewRequest(http.MethodPost, "/v1/videos", bytes.NewReader(formBytes))
+		request.Header.Set("Content-Type", writer.FormDataContentType())
+		context, _ := gin.CreateTestContext(httptest.NewRecorder())
+		context.Request = request
+		info := &RelayInfo{TaskRelayInfo: &TaskRelayInfo{}}
+		// The relay middleware buffers the body and hands the handler a fresh reader.
+		_, err := common.GetRequestBody(context)
+		require.NoError(t, err)
+		context.Request.Body = io.NopCloser(bytes.NewReader(formBytes))
+
+		taskErr := ValidateBasicTaskRequest(context, info, constant.TaskActionTextToVideo)
+		require.Nil(t, taskErr)
+
+		storedReq, err := GetTaskRequest(context)
+		require.NoError(t, err)
+		assert.Equal(t, "1080p", storedReq.Resolution)
+		assert.Equal(t, "9:16", storedReq.AspectRatio)
+		assert.NotContains(t, storedReq.Metadata, "resolution")
+		assert.NotContains(t, storedReq.Metadata, "aspect_ratio")
+	})
 }
