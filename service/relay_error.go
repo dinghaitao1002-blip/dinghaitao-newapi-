@@ -25,6 +25,9 @@ func RecordRelayChannelCircuitFailure(channelID int, modelName string, err *type
 	if err == nil {
 		return 0, false
 	}
+	if normalizeInputSizeError(err) {
+		return 0, false
+	}
 	if _, localRejection := relaycommon.AsParamOverrideReturnError(err); localRejection {
 		return 0, false
 	}

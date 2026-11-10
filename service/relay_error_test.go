@@ -149,6 +149,48 @@ func TestRecordRelayChannelCircuitFailureKeepsUpstreamProtection(t *testing.T) {
 	}
 }
 
+func TestInputSizeErrorsDoNotAffectChannelCircuit(t *testing.T) {
+	for _, useRedis := range []bool{false, true} {
+		name := "memory"
+		if useRedis {
+			name = "redis"
+		}
+		t.Run(name, func(t *testing.T) {
+			server := withRelayCircuitTestSettings(t, useRedis)
+			channelID := 730000 + int(relayCircuitTestChannels.Add(1))
+			upstream := types.NewOpenAIError(errors.New("upstream unavailable"), types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway)
+			count, tripped := RecordRelayChannelCircuitFailure(channelID, t.Name(), upstream)
+			require.Equal(t, 1, count)
+			require.False(t, tripped)
+			inputErrors := []*types.NewAPIError{
+				types.NewOpenAIError(errors.New("input rejected"), "input_too_large", http.StatusBadGateway),
+				types.NewOpenAIError(errors.New("input rejected"), "upstream_request_too_large", http.StatusInternalServerError),
+				types.NewOpenAIError(errors.New("payload rejected"), "upstream_error", http.StatusRequestEntityTooLarge),
+			}
+			for _, apiErr := range inputErrors {
+				count, tripped = RecordRelayChannelCircuitFailure(channelID, t.Name(), apiErr)
+				assert.Zero(t, count)
+				assert.False(t, tripped)
+				assert.Equal(t, http.StatusRequestEntityTooLarge, apiErr.StatusCode)
+			}
+			count, tripped = RecordRelayChannelCircuitFailure(channelID, t.Name(), upstream)
+			require.Equal(t, 2, count, "input rejections must preserve the real failure streak")
+			require.True(t, tripped)
+			if server != nil {
+				server.FastForward(30 * time.Second)
+			}
+			for _, apiErr := range inputErrors {
+				_, _ = RecordRelayChannelCircuitFailure(channelID, t.Name(), apiErr)
+			}
+			assert.True(t, common.IsChannelCircuitOpen(channelID, t.Name()))
+			if server != nil {
+				server.FastForward(31 * time.Second)
+				assert.False(t, common.IsChannelCircuitOpen(channelID, t.Name()), "input rejections must not extend cooldown")
+			}
+		})
+	}
+}
+
 func TestShouldRetryRelayErrorHonorsChannelPinOnChannelError(t *testing.T) {
 	err := types.NewError(errors.New("channel failed"), types.ErrorCodeChannelNoAvailableKey)
 	for _, test := range []struct {
