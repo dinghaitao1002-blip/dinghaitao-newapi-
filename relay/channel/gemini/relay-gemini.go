@@ -201,6 +201,36 @@ func handleFinalStream(c *gin.Context, info *relaycommon.RelayInfo, resp *dto.Ch
 	return nil
 }
 
+// rejectBlockedGeminiResponse returns a 400 prompt_blocked error when upstream
+// answered 200 but blocked the request without producing any output: either a
+// blocked prompt with no candidates, or candidates that only carry a blocking
+// finishReason. Such a response must be rejected instead of settled.
+func rejectBlockedGeminiResponse(c *gin.Context, info *relaycommon.RelayInfo, geminiResponse *dto.GeminiChatResponse) *types.NewAPIError {
+	reason := ""
+	if len(geminiResponse.Candidates) == 0 && geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
+		reason = strings.ToUpper(*geminiResponse.PromptFeedback.BlockReason)
+	}
+	for _, candidate := range geminiResponse.Candidates {
+		if len(candidate.Content.Parts) > 0 {
+			return nil
+		}
+		if candidate.FinishReason == nil {
+			continue
+		}
+		switch finishReason := strings.ToUpper(*candidate.FinishReason); finishReason {
+		case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
+			"IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION", "IMAGE_OTHER", "NO_IMAGE":
+			reason = finishReason
+		}
+	}
+	if reason == "" {
+		return nil
+	}
+	info.PerformanceBusinessRejection = true
+	common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_block_reason="+reason)
+	return types.NewOpenAIError(errors.New("request blocked by Gemini API: "+reason), types.ErrorCodePromptBlocked, http.StatusBadRequest)
+}
+
 func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, callback func(data string, geminiResponse *dto.GeminiChatResponse) bool) (*dto.Usage, *types.NewAPIError) {
 	var usage = &dto.Usage{}
 	var imageCount int
@@ -208,6 +238,8 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	var streamErr error
 	var accumulatedUsageMetadata *dto.GeminiUsageMetadata
 	var grounding geminiGroundingCounter
+	var hasOutput bool
+	var blockedErr *types.NewAPIError
 	responseText := strings.Builder{}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
@@ -218,11 +250,22 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			return
 		}
 
+		// A block that arrives before any output is rejected without
+		// forwarding the frame; once output was streamed the request settles.
+		if !hasOutput {
+			if blockedErr = rejectBlockedGeminiResponse(c, info, &geminiResponse); blockedErr != nil {
+				sr.Stop(blockedErr)
+				return
+			}
+		}
 		if len(geminiResponse.Candidates) == 0 && geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
 			info.PerformanceBusinessRejection = true
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
 		}
 		info.ObserveResponseModel(gjson.Get(data, "modelVersion").Str)
+		for _, candidate := range geminiResponse.Candidates {
+			hasOutput = hasOutput || len(candidate.Content.Parts) > 0
+		}
 		for _, candidate := range geminiResponse.Candidates {
 			if candidate.FinishReason == nil || *candidate.FinishReason == "" || *candidate.FinishReason == "FINISH_REASON_UNSPECIFIED" {
 				continue
@@ -266,6 +309,9 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			sr.Stop(streamErr)
 		}
 	})
+	if blockedErr != nil {
+		return usage, blockedErr
+	}
 	info.StreamStatus.RequireTerminal()
 
 	if !hasBillableUsageMetadata {
@@ -426,26 +472,18 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	grounding.observe(&geminiResponse)
 	grounding.commit(info)
 	countGeminiBillableFunctionCalls(info, &geminiResponse)
+	if blockedErr := rejectBlockedGeminiResponse(c, info, &geminiResponse); blockedErr != nil {
+		return nil, blockedErr
+	}
 	if len(geminiResponse.Candidates) == 0 {
 		usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
 
-		var newAPIError *types.NewAPIError
-		if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
-			info.PerformanceBusinessRejection = true
-			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
-			newAPIError = types.NewOpenAIError(
-				errors.New("request blocked by Gemini API: "+*geminiResponse.PromptFeedback.BlockReason),
-				types.ErrorCodePromptBlocked,
-				http.StatusBadRequest,
-			)
-		} else {
-			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_empty_candidates")
-			newAPIError = types.NewOpenAIError(
-				errors.New("empty response from Gemini API"),
-				types.ErrorCodeEmptyResponse,
-				http.StatusInternalServerError,
-			)
-		}
+		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_empty_candidates")
+		newAPIError := types.NewOpenAIError(
+			errors.New("empty response from Gemini API"),
+			types.ErrorCodeEmptyResponse,
+			http.StatusInternalServerError,
+		)
 
 		service.ResetStatusCode(newAPIError, c.GetString("status_code_mapping"))
 
