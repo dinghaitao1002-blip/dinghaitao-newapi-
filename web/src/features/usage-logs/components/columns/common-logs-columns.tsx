@@ -44,7 +44,10 @@ import {
   formatTaskUsageUnitPrice,
   getTaskUsagePriceUnitLabelKey,
 } from '@/features/pricing/lib/dynamic-price'
-import { pluginUsageSchema } from '@/features/pricing/lib/plugin-pricing'
+import {
+  pluginUsageSchema,
+  taskExpressionCompatible,
+} from '@/features/pricing/lib/plugin-pricing'
 import { taskUsageUnitLabel } from '@/features/pricing/lib/task-price-display'
 import type { BillingUsageSchema } from '@/features/pricing/types'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
@@ -83,6 +86,24 @@ interface DetailSegment {
   text: string
   muted?: boolean
   danger?: boolean
+}
+
+function privateImagePriceSegment(
+  unitPrice: number,
+  other: LogOtherData,
+  t: (key: string) => string
+): DetailSegment {
+  const count = other.image_count ?? other.usage_facts?.image_count
+  const hasCallPrice =
+    typeof count === 'number' &&
+    Number.isSafeInteger(count) &&
+    count > 0 &&
+    Number.isFinite(unitPrice * count)
+  const price = hasCallPrice ? unitPrice * count : unitPrice
+  const label = hasCallPrice ? t('Per-call') : t('Per image')
+  return {
+    text: `${label} · ${formatBillingCurrencyFromUSD(price, { digitsLarge: 4, digitsSmall: 6, abbreviate: false })}`,
+  }
 }
 
 function formatRatioCompact(ratio: number | undefined): string {
@@ -181,10 +202,20 @@ function buildTypeDetailSegments(
   }
   const isTieredExpr = other.billing_mode === 'tiered_expr'
   const tieredSummary = getTieredBillingSummary(other)
+  let privateImageUnitPrice: number | undefined
   if (isTieredExpr && other.is_task) {
+    // Historical private image logs can precede the pricing metadata refresh.
+    const privateImageSchema: BillingUsageSchema = {
+      image_count: { type: 'number', unit: 'count' },
+    }
+    const expression = decodeBillingExprB64(other.expr_b64)
+    const isPrivateImageExpression =
+      other.matched_tier === 'user_private' &&
+      taskExpressionCompatible(expression, privateImageSchema) === true
     const tiers = parseTaskTiersFromExpr(
-      decodeBillingExprB64(other.expr_b64),
-      usageSchema,
+      expression,
+      usageSchema ??
+        (isPrivateImageExpression ? privateImageSchema : undefined),
       true
     )
     const tier = tiers.find(
@@ -194,6 +225,18 @@ function buildTypeDetailSegments(
           normalizeTierLabel(other.matched_tier)
     )
     if (tier) {
+      const imagePrice = tier.unitPrices.image_count
+      if (
+        tier.label === 'user_private' &&
+        tier.constant === 0 &&
+        Object.keys(tier.unitPrices).length === 1 &&
+        typeof imagePrice === 'number' &&
+        Number.isFinite(imagePrice) &&
+        imagePrice >= 0 &&
+        isPrivateImageExpression
+      ) {
+        privateImageUnitPrice = imagePrice
+      }
       const prices = Object.entries(tier.unitPrices).map(([field, price]) => {
         const definition = usageSchema?.[field]
         const unitKey = getTaskUsagePriceUnitLabelKey(definition?.unit)
@@ -216,6 +259,18 @@ function buildTypeDetailSegments(
     }
   } else if (isTieredExpr) {
     if (tieredSummary) {
+      const imagePrice = tieredSummary.priceEntries[0]
+      if (
+        tieredSummary.tier.label === 'user_private' &&
+        tieredSummary.priceEntries.length === 1 &&
+        (imagePrice?.unit === 'image' ||
+          tieredSummary.tier.imageCount === true) &&
+        imagePrice !== undefined &&
+        Number.isFinite(imagePrice.price) &&
+        imagePrice.price >= 0
+      ) {
+        privateImageUnitPrice = imagePrice.price
+      }
       const baseEntries = tieredSummary.priceEntries
         .filter((entry) => ['inputPrice', 'outputPrice'].includes(entry.field))
         .map((entry) => formatPriceCompact(entry.price))
@@ -336,6 +391,14 @@ function buildTypeDetailSegments(
         })
       }
     }
+  }
+
+  if (privateImageUnitPrice !== undefined) {
+    segments.splice(
+      0,
+      segments.length,
+      privateImagePriceSegment(privateImageUnitPrice, other, t)
+    )
   }
 
   if (other.is_system_prompt_overwritten) {
