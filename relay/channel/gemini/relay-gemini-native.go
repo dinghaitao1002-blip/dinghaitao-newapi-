@@ -43,13 +43,18 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 	grounding.commit(info)
 	countGeminiBillableFunctionCalls(info, &geminiResponse)
 
+	// Upstream can answer 200 with a blocked prompt and no candidates, or with
+	// a candidate that only carries a blocking finishReason. Nothing was
+	// produced, so reject instead of settling.
 	if len(geminiResponse.Candidates) == 0 && geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
 		info.PerformanceBusinessRejection = true
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
+		return nil, types.NewOpenAIError(
+			errors.New("request blocked by Gemini API: "+*geminiResponse.PromptFeedback.BlockReason),
+			types.ErrorCodePromptBlocked,
+			http.StatusBadRequest,
+		)
 	}
-
-	// Upstream can answer 200 with a candidate that only carries a blocking
-	// finishReason. Nothing was produced, so reject instead of settling.
 	blockedReason := ""
 	for _, candidate := range geminiResponse.Candidates {
 		if len(candidate.Content.Parts) > 0 {

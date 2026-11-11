@@ -761,11 +761,13 @@ func TestGeminiTextGenerationHandlerRejectsBlockedResponseWithoutOutput(t *testi
 
 	imagePart := dto.GeminiPart{InlineData: &dto.GeminiInlineData{MimeType: "image/png", Data: "aGk="}}
 	cases := []struct {
-		name         string
-		finishReason string
-		parts        []dto.GeminiPart
-		wantBlocked  bool
+		name          string
+		finishReason  string
+		parts         []dto.GeminiPart
+		promptBlocked bool
+		wantBlocked   bool
 	}{
+		{name: "blocked prompt without candidates", finishReason: "PROHIBITED_CONTENT", promptBlocked: true, wantBlocked: true},
 		{name: "prohibited content without output", finishReason: "PROHIBITED_CONTENT", wantBlocked: true},
 		{name: "image safety without output", finishReason: "IMAGE_SAFETY", wantBlocked: true},
 		{name: "no image without output", finishReason: "NO_IMAGE", wantBlocked: true},
@@ -783,13 +785,17 @@ func TestGeminiTextGenerationHandlerRejectsBlockedResponseWithoutOutput(t *testi
 				OriginModelName: "gemini-3-pro-image-preview",
 				ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3-pro-image"},
 			}
-			body, err := common.Marshal(dto.GeminiChatResponse{
+			payload := dto.GeminiChatResponse{
 				Candidates: []dto.GeminiChatCandidate{{
 					Content:      dto.GeminiChatContent{Role: "model", Parts: tc.parts},
 					FinishReason: &tc.finishReason,
 				}},
 				UsageMetadata: dto.GeminiUsageMetadata{PromptTokenCount: 481, TotalTokenCount: 481},
-			})
+			}
+			if tc.promptBlocked {
+				payload = dto.GeminiChatResponse{PromptFeedback: &dto.GeminiChatPromptFeedback{BlockReason: &tc.finishReason}}
+			}
+			body, err := common.Marshal(payload)
 			require.NoError(t, err)
 
 			usage, newAPIError := GeminiTextGenerationHandler(c, info, &http.Response{Body: io.NopCloser(bytes.NewReader(body))})
