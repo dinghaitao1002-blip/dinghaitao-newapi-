@@ -754,3 +754,58 @@ func TestGeminiHandlersCountGroundingQueries(t *testing.T) {
 		})
 	}
 }
+
+func TestGeminiTextGenerationHandlerRejectsBlockedResponseWithoutOutput(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	imagePart := dto.GeminiPart{InlineData: &dto.GeminiInlineData{MimeType: "image/png", Data: "aGk="}}
+	cases := []struct {
+		name         string
+		finishReason string
+		parts        []dto.GeminiPart
+		wantBlocked  bool
+	}{
+		{name: "prohibited content without output", finishReason: "PROHIBITED_CONTENT", wantBlocked: true},
+		{name: "image safety without output", finishReason: "IMAGE_SAFETY", wantBlocked: true},
+		{name: "no image without output", finishReason: "NO_IMAGE", wantBlocked: true},
+		{name: "lowercase reason without output", finishReason: "prohibited_content", wantBlocked: true},
+		{name: "blocked reason with image output", finishReason: "IMAGE_SAFETY", parts: []dto.GeminiPart{imagePart}},
+		{name: "normal stop without output", finishReason: "STOP"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-3-pro-image-preview:generateContent", nil)
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "gemini-3-pro-image-preview",
+				ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3-pro-image"},
+			}
+			body, err := common.Marshal(dto.GeminiChatResponse{
+				Candidates: []dto.GeminiChatCandidate{{
+					Content:      dto.GeminiChatContent{Role: "model", Parts: tc.parts},
+					FinishReason: &tc.finishReason,
+				}},
+				UsageMetadata: dto.GeminiUsageMetadata{PromptTokenCount: 481, TotalTokenCount: 481},
+			})
+			require.NoError(t, err)
+
+			usage, newAPIError := GeminiTextGenerationHandler(c, info, &http.Response{Body: io.NopCloser(bytes.NewReader(body))})
+
+			if !tc.wantBlocked {
+				require.Nil(t, newAPIError)
+				require.NotNil(t, usage)
+				assert.NotEmpty(t, recorder.Body.Bytes())
+				return
+			}
+			require.NotNil(t, newAPIError)
+			assert.Equal(t, http.StatusBadRequest, newAPIError.StatusCode)
+			assert.Equal(t, types.ErrorCodePromptBlocked, newAPIError.GetErrorCode())
+			assert.Contains(t, newAPIError.Error(), strings.ToUpper(tc.finishReason))
+			assert.True(t, info.PerformanceBusinessRejection)
+			assert.Empty(t, recorder.Body.Bytes())
+		})
+	}
+}

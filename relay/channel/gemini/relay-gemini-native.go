@@ -1,9 +1,11 @@
 package gemini
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -44,6 +46,33 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 	if len(geminiResponse.Candidates) == 0 && geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
 		info.PerformanceBusinessRejection = true
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
+	}
+
+	// Upstream can answer 200 with a candidate that only carries a blocking
+	// finishReason. Nothing was produced, so reject instead of settling.
+	blockedReason := ""
+	for _, candidate := range geminiResponse.Candidates {
+		if len(candidate.Content.Parts) > 0 {
+			blockedReason = ""
+			break
+		}
+		if candidate.FinishReason == nil {
+			continue
+		}
+		switch reason := strings.ToUpper(*candidate.FinishReason); reason {
+		case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
+			"IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION", "IMAGE_OTHER", "NO_IMAGE":
+			blockedReason = reason
+		}
+	}
+	if blockedReason != "" {
+		info.PerformanceBusinessRejection = true
+		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_finish_reason="+blockedReason)
+		return nil, types.NewOpenAIError(
+			errors.New("request blocked by Gemini API: "+blockedReason),
+			types.ErrorCodePromptBlocked,
+			http.StatusBadRequest,
+		)
 	}
 
 	// 计算使用量（优先上游 UsageMetadata，缺失时本地估算并保留 Gemini 计费语义）
