@@ -588,6 +588,7 @@ func TestSharedEndpointBillingKeepsOrdinaryAndPluginPricesSeparate(t *testing.T)
 		alias, shared, legacy               bool
 		privatePrice                        *float64
 		privateDisabled                     bool
+		unifiedImagePrice                   bool
 	}{
 		{name: "task usage price is rejected by ordinary relay", expression: taskExpr, taskQuota: 50000, taskFinal: 75000, wantError: "task usage expression"},
 		{name: "enum fallback cannot silently bill zero", expression: `u("output_image_type") == "2k" ? tier("2k", u("image_count") * 0.08) : tier("1k", 0.04)`, taskQuota: 20000, taskFinal: 20000, wantError: "task usage expression"},
@@ -602,6 +603,7 @@ func TestSharedEndpointBillingKeepsOrdinaryAndPluginPricesSeparate(t *testing.T)
 		{name: "another plugin still inherits task USD units", expression: `tier("flat", 0.04)`, override: taskExpr, taskQuota: 50000, taskFinal: 75000, wantError: "shares its billing expression", shared: true},
 		{name: "legacy per image pricing stays shared", ordinaryQuota: 40000, taskQuota: 40000, legacy: true},
 		{name: "image private price applies to relay and plugin", expression: ordinaryExpr, override: taskExpr, privatePrice: common.GetPointer(0.02), ordinaryQuota: 20000, taskQuota: 20000, taskFinal: 30000},
+		{name: "unified image price applies to relay and plugin with legacy quality rows", expression: ordinaryExpr, override: taskExpr, privatePrice: common.GetPointer(0.02), unifiedImagePrice: true, ordinaryQuota: 20000, taskQuota: 20000, taskFinal: 30000},
 		{name: "zero image private price stays free", expression: ordinaryExpr, override: taskExpr, privatePrice: common.GetPointer(0.0)},
 		{name: "mapped image model uses client model private price", expression: ordinaryExpr, override: taskExpr, privatePrice: common.GetPointer(0.02), ordinaryQuota: 20000, taskQuota: 20000, taskFinal: 30000, alias: true},
 		{name: "disabled private price preserves public expressions", expression: ordinaryExpr, override: taskExpr, privatePrice: common.GetPointer(0.02), privateDisabled: true, ordinaryQuota: 40000, taskQuota: 50000, taskFinal: 75000},
@@ -614,7 +616,11 @@ func TestSharedEndpointBillingKeepsOrdinaryAndPluginPricesSeparate(t *testing.T)
 			}
 			require.NoError(t, database.Where("user_id = ?", userID).Delete(&model.UserModelPrice{}).Error)
 			if tc.privatePrice != nil {
-				require.NoError(t, model.UpsertUserModelPrice(userID, name, *tc.privatePrice, !tc.privateDisabled))
+				if tc.unifiedImagePrice {
+					require.NoError(t, model.SaveUnifiedUserImagePrice(userID, name, *tc.privatePrice, true))
+				} else {
+					require.NoError(t, model.UpsertUserModelPrice(userID, name, *tc.privatePrice, !tc.privateDisabled))
+				}
 			}
 			mode := billing_setting.BillingModeTieredExpr
 			if tc.legacy {
@@ -686,6 +692,9 @@ func TestSharedEndpointBillingKeepsOrdinaryAndPluginPricesSeparate(t *testing.T)
 			assert.True(t, task.TieredBillingSnapshot.TaskUsageBilling)
 			// Changing or deleting a user's live rule must not reprice a submitted task.
 			require.NoError(t, model.DeleteUserModelPrice(userID, name))
+			if tc.unifiedImagePrice {
+				require.NoError(t, model.DeleteUnifiedUserImagePrice(userID, name))
+			}
 			// Updating live prices must not change either in-flight meter.
 			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
 				"billing_setting.billing_expr": `{}`, billing_setting.PluginBillingExprOption: `{}`,

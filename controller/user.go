@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/QuantumNous/new-api/constant"
@@ -1473,9 +1474,10 @@ func UpdateUserSetting(c *gin.Context) {
 
 // UserModelPriceRequest is used by admin to set per-user private model price.
 type UserModelPriceRequest struct {
-	ModelName string  `json:"model_name"`
-	Price     float64 `json:"price"`
-	Enabled   bool    `json:"enabled"`
+	ModelName         string  `json:"model_name"`
+	Price             float64 `json:"price"`
+	Enabled           bool    `json:"enabled"`
+	UnifiedImagePrice bool    `json:"unified_image_price,omitempty"`
 }
 
 type UserModelImageQualityPriceRequest struct {
@@ -1527,6 +1529,23 @@ func isImageQualityPrivatePriceAllowedModel(modelName string) bool {
 			strings.Contains(lowerName, "midjourney")
 	}
 	return false
+}
+
+func supportsUnifiedImagePrivatePricing(pricing model.Pricing) bool {
+	_, unit, allowed := model.PrivateModelUnitPrice(pricing)
+	if allowed && unit == "image" {
+		return true
+	}
+	if pricing.BillingMode == billing_setting.BillingModeTieredExpr || pricing.BillingMode == billing_setting.BillingModeVideoPerSecond || pricing.QuotaType != 1 {
+		return false
+	}
+	for _, endpoint := range pricing.SupportedEndpointTypes {
+		if strings.Contains(strings.ToLower(string(endpoint)), "image") {
+			return true
+		}
+	}
+	name := strings.ToLower(pricing.ModelName)
+	return strings.Contains(name, "image") || strings.Contains(name, "dall") || strings.Contains(name, "flux") || strings.Contains(name, "mj") || strings.Contains(name, "midjourney")
 }
 
 func GetUserModelPrices(c *gin.Context) {
@@ -1593,23 +1612,36 @@ func UpsertUserModelPrice(c *gin.Context) {
 			continue
 		}
 		_, _, isPerCall = model.PrivateModelUnitPrice(p)
+		if req.UnifiedImagePrice {
+			isPerCall = supportsUnifiedImagePrivatePricing(p)
+		}
 		break
 	}
 	if !isPerCall {
+		if req.UnifiedImagePrice {
+			common.ApiError(c, errors.New("only flat image-priced models can use unified image pricing"))
+			return
+		}
 		common.ApiError(c, errors.New("only fixed/per-call or flat per-second priced models can use private price"))
 		return
 	}
 
-	if err := model.UpsertUserModelPrice(id, modelName, price, req.Enabled); err != nil {
+	if req.UnifiedImagePrice {
+		err = model.SaveUnifiedUserImagePrice(id, modelName, price, req.Enabled)
+	} else {
+		err = model.UpsertUserModelPrice(id, modelName, price, req.Enabled)
+	}
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 
 	recordManageAuditFor(c, id, "user.model_price.upsert", map[string]interface{}{
-		"user_id":    id,
-		"model_name": modelName,
-		"price":      price,
-		"enabled":    req.Enabled,
+		"user_id":             id,
+		"model_name":          modelName,
+		"price":               price,
+		"enabled":             req.Enabled,
+		"unified_image_price": req.UnifiedImagePrice,
 	})
 
 	common.ApiSuccess(c, nil)
@@ -1640,14 +1672,28 @@ func DeleteUserModelPrice(c *gin.Context) {
 		return
 	}
 
-	if err := model.DeleteUserModelPrice(id, modelName); err != nil {
+	unifiedImagePrice := false
+	if value := c.Query("unified_image_price"); value != "" {
+		unifiedImagePrice, err = strconv.ParseBool(value)
+		if err != nil {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+	}
+	if unifiedImagePrice {
+		err = model.DeleteUnifiedUserImagePrice(id, modelName)
+	} else {
+		err = model.DeleteUserModelPrice(id, modelName)
+	}
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 
 	recordManageAuditFor(c, id, "user.model_price.delete", map[string]interface{}{
-		"user_id":    id,
-		"model_name": modelName,
+		"user_id":             id,
+		"model_name":          modelName,
+		"unified_image_price": unifiedImagePrice,
 	})
 
 	common.ApiSuccess(c, nil)
@@ -1661,15 +1707,16 @@ func GetPerCallPricedModels(c *gin.Context) {
 			continue
 		}
 		items = append(items, gin.H{
-			"model_name":               p.ModelName,
-			"model_price":              price,
-			"pricing_unit":             unit,
-			"enable_groups":            p.EnableGroup,
-			"supported_endpoint_types": p.SupportedEndpointTypes,
-			"description":              p.Description,
-			"icon":                     p.Icon,
-			"tags":                     p.Tags,
-			"vendor_id":                p.VendorID,
+			"model_name":                   p.ModelName,
+			"model_price":                  price,
+			"pricing_unit":                 unit,
+			"supports_unified_image_price": supportsUnifiedImagePrivatePricing(p),
+			"enable_groups":                p.EnableGroup,
+			"supported_endpoint_types":     p.SupportedEndpointTypes,
+			"description":                  p.Description,
+			"icon":                         p.Icon,
+			"tags":                         p.Tags,
+			"vendor_id":                    p.VendorID,
 		})
 	}
 	common.ApiSuccess(c, items)

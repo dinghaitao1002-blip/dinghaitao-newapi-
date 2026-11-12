@@ -1,5 +1,15 @@
 {
   "translation": {
+    "only flat image-priced models can use unified image pricing": "Единая цена доступна только для моделей изображений с фиксированной оплатой за изображение или запрос",
+    "Set image price": "Задать цену изображения",
+    "Edit image price": "Изменить цену изображения",
+    "Image private price": "Индивидуальная цена изображения",
+    "This user pays the same image unit price for every quality and resolution, for synchronous and asynchronous generation.": "Для этого пользователя действует единая цена для всех качеств и разрешений, при синхронной и асинхронной генерации.",
+    "Final cost = unit price × image count.": "Итоговая стоимость = цена за изображение × количество изображений.",
+    "Existing tier prices differ. Enter a single price to replace them when you save.": "Текущие цены по уровням различаются. Введите единую цену, чтобы заменить их при сохранении.",
+    "Delete image price": "Удалить индивидуальную цену",
+    "Save image price": "Сохранить цену изображения",
+    "Failed to load image price": "Не удалось загрузить цену изображения",
     "only fixed/per-call or flat per-second priced models can use private price": "Индивидуальная цена доступна только для моделей с фиксированной ценой за запрос, изображение или секунду",
     "price must be finite and greater than or equal to 0": "Цена должна быть конечным числом, большим или равным 0",
     "Select a model for private pricing": "Выберите модель для индивидуальной цены",

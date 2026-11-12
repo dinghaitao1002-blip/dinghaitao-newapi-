@@ -252,6 +252,25 @@ func TestImageQualityPricingPriorityAndFallback(t *testing.T) {
 		require.Equal(t, "1k", info.ImageResolution)
 	})
 
+	t.Run("unified private image price spans every quality and resolution", func(t *testing.T) {
+		resetPrices(t)
+		require.NoError(t, model.SaveModelImageQualityPrices(modelName, fullImageQualityPriceMatrix(2), true))
+		require.NoError(t, model.SaveUnifiedUserImagePrice(userID, modelName, 0.003, true))
+		for _, quality := range []string{"low", "medium", "high"} {
+			for _, size := range []string{"1024x1024", "2048x2048", "4096x4096"} {
+				ctx, info, meta := newImageQualityPriceTestContext(modelName, userID, quality, size, 2)
+				priceData, err := ModelPriceHelper(ctx, info, 0, meta)
+				require.NoError(t, err)
+				require.Equal(t, 0.003, priceData.ModelPrice)
+				require.Equal(t, "user_image_quality_private", info.ImageQualityPriceSource)
+				require.Zero(t, meta.ImagePriceRatio)
+				expected, err := common.QuotaFromFloatStrict(0.003 * common.QuotaPerUnit * priceData.GroupRatioInfo.GroupRatio * 2)
+				require.NoError(t, err)
+				require.Equal(t, expected, priceData.QuotaToPreConsume)
+			}
+		}
+	})
+
 	t.Run("ordinary user private price is used when quality pricing is absent", func(t *testing.T) {
 		resetPrices(t)
 		require.NoError(t, model.UpsertUserModelPrice(userID, modelName, 1.25, true))

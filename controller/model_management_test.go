@@ -130,21 +130,25 @@ func TestUserPrivatePricingIncludesImageAndVideoUnitExpressions(t *testing.T) {
 	var listed struct {
 		Success bool `json:"success"`
 		Data    []struct {
-			ModelName   string  `json:"model_name"`
-			ModelPrice  float64 `json:"model_price"`
-			PricingUnit string  `json:"pricing_unit"`
+			ModelName                 string  `json:"model_name"`
+			ModelPrice                float64 `json:"model_price"`
+			PricingUnit               string  `json:"pricing_unit"`
+			SupportsUnifiedImagePrice bool    `json:"supports_unified_image_price"`
 		} `json:"data"`
 	}
 	modelManagementRequest(t, GetPerCallPricedModels, http.MethodGet, "/api/user/per-call-models", nil, &listed)
 	require.True(t, listed.Success)
 	prices := make(map[string]float64, len(listed.Data))
 	units := make(map[string]string, len(listed.Data))
+	unified := make(map[string]bool, len(listed.Data))
 	for _, item := range listed.Data {
 		prices[item.ModelName] = item.ModelPrice
 		units[item.ModelName] = item.PricingUnit
+		unified[item.ModelName] = item.SupportsUnifiedImagePrice
 	}
 	assert.Equal(t, map[string]float64{"gpt-image-2.6-flare": 0.007, "private-task-image": 0.009, "private-legacy": 0.02, "private-video": 0.05}, prices)
 	assert.Equal(t, map[string]string{"gpt-image-2.6-flare": "image", "private-task-image": "image", "private-legacy": "request", "private-video": "second"}, units)
+	assert.Equal(t, map[string]bool{"gpt-image-2.6-flare": true, "private-task-image": true, "private-legacy": false, "private-video": false}, unified)
 	for _, tc := range []struct {
 		name    string
 		allowed bool
@@ -203,6 +207,130 @@ func TestUserPrivatePricingProviderUnitPriceSelection(t *testing.T) {
 			assert.Equal(t, tc.ok, ok)
 			assert.Equal(t, tc.price, price)
 			assert.Equal(t, tc.unit, unit)
+		})
+	}
+}
+
+func TestUnifiedImagePrivatePricingDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			if dialect.env != "" && os.Getenv(dialect.env) == "" {
+				t.Skip("set " + dialect.env + " to run this database")
+			}
+			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
+			require.NoError(t, db.AutoMigrate(&model.UserModelPrice{}, &model.UserModelImageQualityPrice{}, &model.ModelImageQualityPrice{}))
+			t.Cleanup(model.InvalidatePricingCache)
+			model.InvalidatePricingCache()
+			user := model.User{Username: "unified-image-owner", AffCode: "unif-owner", Role: common.RoleCommonUser, Group: "default"}
+			other := model.User{Username: "unified-image-other", AffCode: "unif-other", Role: common.RoleCommonUser, Group: "default"}
+			require.NoError(t, db.Create(&user).Error)
+			require.NoError(t, db.Create(&other).Error)
+			channel := model.Channel{Name: "unified-images", Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled}
+			require.NoError(t, db.Create(&channel).Error)
+			for _, name := range []string{"unified-image", "legacy-image", "private-video", "private-token", "dynamic-image"} {
+				require.NoError(t, db.Create(&model.Ability{Group: "default", Model: name, ChannelId: channel.Id, Enabled: true}).Error)
+			}
+			require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"legacy-image":0.04}`))
+			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+				"billing_setting.billing_mode": `{"unified-image":"tiered_expr","private-video":"tiered_expr","private-token":"tiered_expr","dynamic-image":"tiered_expr"}`,
+				"billing_setting.billing_expr": `{"unified-image":"tier(\"image\",fixed(0.007))*image_count","private-video":"tier(\"base\",u(\"seconds\")*0.05)","private-token":"tier(\"base\",p*2+c*8)","dynamic-image":"tier(\"image\",fixed(0.007))*image_count*(param(\"quality\")==\"high\"?2:1)"}`,
+			}))
+			request := func(handler gin.HandlerFunc, method, target string, price float64, unified bool) bool {
+				t.Helper()
+				recorder := httptest.NewRecorder()
+				ctx, _ := gin.CreateTestContext(recorder)
+				ctx.Params = gin.Params{{Key: "id", Value: strconv.Itoa(user.Id)}}
+				ctx.Set("role", common.RoleRootUser)
+				body, err := common.Marshal(gin.H{"model_name": target, "price": price, "enabled": true, "unified_image_price": unified})
+				require.NoError(t, err)
+				path := "/api/user/model-prices?model_name=" + target
+				if unified {
+					path += "&unified_image_price=true"
+				}
+				ctx.Request = httptest.NewRequest(method, path, bytes.NewReader(body))
+				handler(ctx)
+				var response struct{ Success bool }
+				require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response), recorder.Body.String())
+				return response.Success
+			}
+			assertPrices := func(price float64) {
+				t.Helper()
+				flat, found := model.GetUserModelPrice(user.Id, "unified-image")
+				require.True(t, found)
+				assert.Equal(t, price, flat)
+				quality, err := model.GetUserModelImageQualityPrices(user.Id, "unified-image")
+				require.NoError(t, err)
+				require.Len(t, quality, 9)
+				for _, row := range quality {
+					assert.Equal(t, price, row.Price)
+					assert.True(t, row.Enabled)
+				}
+			}
+			require.NoError(t, model.UpsertUserModelPrice(other.Id, "unified-image", 0.09, true))
+			require.NoError(t, model.UpsertUserModelPrice(user.Id, "private-video", 0.03, true))
+			require.NoError(t, model.UpsertUserModelImageQualityPrice(other.Id, "unified-image", "low", "1k", 0.09, true))
+			require.NoError(t, model.UpsertUserModelImageQualityPrice(user.Id, "unified-image", "high", "4k", 0.2, true))
+			require.NoError(t, db.Create(&model.ModelImageQualityPrice{ModelName: "unified-image", Quality: "high", Resolution: "4k", Price: 0.04, Enabled: true}).Error)
+			for _, price := range []float64{0.003, 0} {
+				require.True(t, request(UpsertUserModelPrice, http.MethodPost, "unified-image", price, true))
+				assertPrices(price)
+			}
+			for _, name := range []string{"private-video", "private-token", "dynamic-image"} {
+				assert.False(t, request(UpsertUserModelPrice, http.MethodPost, name, 0.003, true))
+			}
+			require.True(t, request(UpsertUserModelPrice, http.MethodPost, "legacy-image", 0.003, true))
+			// Fail after the flat price changed and old quality rows were removed:
+			// the same transaction must restore both representations.
+			require.NoError(t, db.Callback().Create().Before("gorm:create").Register("reject_unified_quality", func(tx *gorm.DB) {
+				if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "UserModelImageQualityPrice" {
+					tx.AddError(errors.New("injected quality write failure"))
+				}
+			}))
+			assert.False(t, request(UpsertUserModelPrice, http.MethodPost, "unified-image", 0.01, true))
+			require.NoError(t, db.Callback().Create().Remove("reject_unified_quality"))
+			assertPrices(0)
+			// Ordinary callers retain the old behavior and cannot remove quality rules.
+			require.True(t, request(DeleteUserModelPrice, http.MethodDelete, "unified-image", 0, false))
+			quality, err := model.GetUserModelImageQualityPrices(user.Id, "unified-image")
+			require.NoError(t, err)
+			require.Len(t, quality, 9)
+			require.True(t, request(UpsertUserModelPrice, http.MethodPost, "unified-image", 0.003, true))
+			require.NoError(t, db.Callback().Delete().Before("gorm:delete").Register("reject_unified_quality_delete", func(tx *gorm.DB) {
+				if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "UserModelImageQualityPrice" {
+					tx.AddError(errors.New("injected quality delete failure"))
+				}
+			}))
+			assert.False(t, request(DeleteUserModelPrice, http.MethodDelete, "unified-image", 0, true))
+			require.NoError(t, db.Callback().Delete().Remove("reject_unified_quality_delete"))
+			assertPrices(0.003)
+			require.NoError(t, model.SaveUnifiedUserImagePrice(user.Id, "unified-image", 0.003, false))
+			_, enabled := model.GetUserModelPrice(user.Id, "unified-image")
+			assert.False(t, enabled)
+			quality, err = model.GetUserModelImageQualityPrices(user.Id, "unified-image")
+			require.NoError(t, err)
+			assert.Empty(t, quality, "disabled overrides must not leave quality rows that block public pricing")
+			require.True(t, request(UpsertUserModelPrice, http.MethodPost, "unified-image", 0.003, true))
+			// A retired model's overrides must remain removable.
+			require.NoError(t, db.Where("model = ?", "unified-image").Delete(&model.Ability{}).Error)
+			model.InvalidatePricingCache()
+			require.True(t, request(DeleteUserModelPrice, http.MethodDelete, "unified-image", 0, true))
+			_, found := model.GetUserModelPrice(user.Id, "unified-image")
+			assert.False(t, found)
+			quality, err = model.GetUserModelImageQualityPrices(user.Id, "unified-image")
+			require.NoError(t, err)
+			assert.Empty(t, quality)
+			otherPrice, found := model.GetUserModelPrice(other.Id, "unified-image")
+			require.True(t, found)
+			assert.Equal(t, 0.09, otherPrice)
+			videoPrice, found := model.GetUserModelPrice(user.Id, "private-video")
+			require.True(t, found)
+			assert.Equal(t, 0.03, videoPrice)
+			otherQuality, err := model.GetUserModelImageQualityPrices(other.Id, "unified-image")
+			require.NoError(t, err)
+			require.Len(t, otherQuality, 1)
+			publicPrice, found := model.GetModelImageQualityPrice("unified-image", "high", "4k")
+			require.True(t, found)
+			assert.Equal(t, 0.04, publicPrice)
 		})
 	}
 }

@@ -1,5 +1,15 @@
 {
   "translation": {
+    "only flat image-priced models can use unified image pricing": "画像単位または呼び出し単位の固定料金画像モデルのみ、統一画像料金を設定できます",
+    "Set image price": "画像単価を設定",
+    "Edit image price": "画像単価を変更",
+    "Image private price": "ユーザー専用の画像単価",
+    "This user pays the same image unit price for every quality and resolution, for synchronous and asynchronous generation.": "このユーザーには、画質・解像度によらず同じ画像単価を適用します。同期生成と非同期生成も同額です。",
+    "Final cost = unit price × image count.": "最終料金 = 画像単価 × 画像数。",
+    "Existing tier prices differ. Enter a single price to replace them when you save.": "既存の段階別料金が異なります。統一単価を入力して保存すると、既存の料金を置き換えます。",
+    "Delete image price": "画像専用料金を削除",
+    "Save image price": "画像単価を保存",
+    "Failed to load image price": "画像単価の読み込みに失敗しました",
     "only fixed/per-call or flat per-second priced models can use private price": "リクエスト単位、画像単位、または秒単位で固定料金のモデルのみ個別料金を設定できます",
     "price must be finite and greater than or equal to 0": "料金は0以上の有限の数値である必要があります",
     "Select a model for private pricing": "個別料金を設定するモデルを選択",

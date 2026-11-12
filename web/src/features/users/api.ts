@@ -285,7 +285,12 @@ export async function getUserModelPrices(
 
 export async function upsertUserModelPrice(
   userId: number,
-  payload: { model_name: string; price: number; enabled: boolean }
+  payload: {
+    model_name: string
+    price: number
+    enabled: boolean
+    unified_image_price?: boolean
+  }
 ): Promise<ApiResponse> {
   const res = await api.post(`/api/user/${userId}/model-prices`, payload)
   return res.data
@@ -293,10 +298,14 @@ export async function upsertUserModelPrice(
 
 export async function deleteUserModelPrice(
   userId: number,
-  modelName: string
+  modelName: string,
+  unifiedImagePrice = false
 ): Promise<ApiResponse> {
   const res = await api.delete(`/api/user/${userId}/model-prices`, {
-    params: { model_name: modelName },
+    params: {
+      model_name: modelName,
+      ...(unifiedImagePrice ? { unified_image_price: true } : {}),
+    },
   })
   return res.data
 }

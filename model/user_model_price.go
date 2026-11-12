@@ -100,6 +100,10 @@ func UpsertUserModelPrice(userId int, modelName string, price float64, enabled b
 		return err
 	}
 
+	return upsertUserModelPrice(DB, userId, modelName, price, enabled)
+}
+
+func upsertUserModelPrice(tx *gorm.DB, userId int, modelName string, price float64, enabled bool) error {
 	now := time.Now().Unix()
 	item := UserModelPrice{
 		UserId:    userId,
@@ -110,7 +114,7 @@ func UpsertUserModelPrice(userId int, modelName string, price float64, enabled b
 		UpdatedAt: now,
 	}
 
-	return DB.Clauses(clause.OnConflict{
+	return tx.Clauses(clause.OnConflict{
 		Columns: []clause.Column{
 			{Name: "user_id"},
 			{Name: "model_name"},
@@ -121,6 +125,53 @@ func UpsertUserModelPrice(userId int, modelName string, price float64, enabled b
 			"updated_at": now,
 		}),
 	}).Create(&item).Error
+}
+
+// SaveUnifiedUserImagePrice keeps one administrator-entered image price usable
+// by both ordinary/task expressions and legacy quality pricing. All writes
+// share one transaction, so neither serving path can observe a partial save.
+func SaveUnifiedUserImagePrice(userId int, modelName string, price float64, enabled bool) error {
+	modelName, price, err := NormalizeUserModelPriceInput(modelName, price)
+	if err != nil {
+		return err
+	}
+	if userId <= 0 {
+		return errors.New("invalid user_id")
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := upsertUserModelPrice(tx, userId, modelName, price, enabled); err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ? AND model_name = ?", userId, modelName).Delete(&UserModelImageQualityPrice{}).Error; err != nil {
+			return err
+		}
+		if !enabled {
+			return nil
+		}
+		now := time.Now().Unix()
+		rows := make([]UserModelImageQualityPrice, 0, len(supportedImageQualities)*len(supportedImageResolutions))
+		for quality := range supportedImageQualities {
+			for resolution := range supportedImageResolutions {
+				rows = append(rows, UserModelImageQualityPrice{UserId: userId, ModelName: modelName, Quality: quality, Resolution: resolution, Price: price, Enabled: true, CreatedAt: now, UpdatedAt: now})
+			}
+		}
+		return tx.Create(&rows).Error
+	})
+}
+
+// DeleteUnifiedUserImagePrice removes both private representations together.
+// Public model prices and every other user's/model's overrides are untouched.
+func DeleteUnifiedUserImagePrice(userId int, modelName string) error {
+	modelName = strings.TrimSpace(modelName)
+	if userId <= 0 || modelName == "" {
+		return errors.New("invalid user_id or model_name")
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ? AND model_name = ?", userId, modelName).Delete(&UserModelPrice{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("user_id = ? AND model_name = ?", userId, modelName).Delete(&UserModelImageQualityPrice{}).Error
+	})
 }
 
 func DeleteUserModelPrice(userId int, modelName string) error {

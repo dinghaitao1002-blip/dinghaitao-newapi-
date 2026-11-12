@@ -91,8 +91,6 @@ import {
   deleteUserModelPrice,
   getPerCallPricedModels,
   getUserModelImageQualityPrices,
-  saveUserModelImageQualityPrices,
-  deleteUserModelImageQualityPrices,
 } from '../api'
 import { BINDING_FIELDS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import {
@@ -112,24 +110,6 @@ type UsersMutateDrawerProps = {
   currentRow?: User
 }
 
-const IMAGE_QUALITY_LEVELS = ['low', 'medium', 'high'] as const
-const IMAGE_RESOLUTION_LEVELS = ['1k', '2k', '4k'] as const
-
-type ImageQualityLevel = (typeof IMAGE_QUALITY_LEVELS)[number]
-type ImageResolutionLevel = (typeof IMAGE_RESOLUTION_LEVELS)[number]
-type ImageQualityPriceDraft = Record<
-  ImageQualityLevel,
-  Record<ImageResolutionLevel, string>
->
-
-function createEmptyImageQualityPriceDraft(): ImageQualityPriceDraft {
-  return {
-    low: { '1k': '', '2k': '', '4k': '' },
-    medium: { '1k': '', '2k': '', '4k': '' },
-    high: { '1k': '', '2k': '', '4k': '' },
-  }
-}
-
 export function UsersMutateDrawer({
   open,
   onOpenChange,
@@ -143,12 +123,13 @@ export function UsersMutateDrawer({
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false)
   const [privateModelName, setPrivateModelName] = useState('')
   const [privateModelPrice, setPrivateModelPrice] = useState('')
-  const [imageQualitySheetOpen, setImageQualitySheetOpen] = useState(false)
-  const [imageQualityModelName, setImageQualityModelName] = useState('')
-  const [imageQualityPriceDraft, setImageQualityPriceDraft] =
-    useState<ImageQualityPriceDraft>(() => createEmptyImageQualityPriceDraft())
-  const [isSavingImageQualityPrice, setIsSavingImageQualityPrice] =
+  const [imagePriceSheetOpen, setImagePriceSheetOpen] = useState(false)
+  const [imagePriceModelName, setImagePriceModelName] = useState('')
+  const [imageUnitPrice, setImageUnitPrice] = useState('')
+  const [hasLegacyTierDifferences, setHasLegacyTierDifferences] =
     useState(false)
+  const [isLoadingImagePrice, setIsLoadingImagePrice] = useState(false)
+  const [isSavingImagePrice, setIsSavingImagePrice] = useState(false)
   // Matrix as loaded from the server; an unchanged matrix is not resubmitted so
   // routine edits of an administrator do not require step-up verification.
   const loadedPermissions = useRef<AdminPermissionMatrix | undefined>(undefined)
@@ -191,6 +172,12 @@ export function UsersMutateDrawer({
   const privateModelUnits = new Map(
     perCallModels.map((item) => [item.model_name, item.pricing_unit])
   )
+  const supportsUnifiedImagePrice = (modelName: string) => {
+    const model = perCallModels.find((item) => item.model_name === modelName)
+    return (
+      model?.supports_unified_image_price ?? model?.pricing_unit === 'image'
+    )
+  }
   const selectedPrivatePriceIsPerSecond =
     privateModelUnits.get(privateModelName) === 'second'
 
@@ -354,6 +341,9 @@ export function UsersMutateDrawer({
           model_name: privateModelName,
           price,
           enabled: true,
+          ...(supportsUnifiedImagePrice(privateModelName)
+            ? { unified_image_price: true }
+            : {}),
         })
       )
       toast.success(t('模型秘价已保存'))
@@ -366,10 +356,17 @@ export function UsersMutateDrawer({
   }
 
   const handleDeletePrivatePrice = async (modelName: string) => {
-    if (!currentRow) return
+    if (!currentRow || !perCallModelsData) return
 
     try {
-      requireServerSuccess(await deleteUserModelPrice(currentRow.id, modelName))
+      requireServerSuccess(
+        await deleteUserModelPrice(
+          currentRow.id,
+          modelName,
+          supportsUnifiedImagePrice(modelName) ||
+            !perCallModels.some((item) => item.model_name === modelName)
+        )
+      )
       toast.success(t('模型秘价已删除'))
       void refetchPrivatePrices()
     } catch (error) {
@@ -377,95 +374,89 @@ export function UsersMutateDrawer({
     }
   }
 
-  const openImageQualityPriceSheet = async (modelName: string) => {
-    if (!currentRow || !modelName) return
-    setImageQualityModelName(modelName)
-    const draft = createEmptyImageQualityPriceDraft()
-
+  const openImagePriceSheet = async (modelName: string) => {
+    if (!currentRow || !modelName || isLoadingImagePrice) return
+    setIsLoadingImagePrice(true)
     try {
-      const result = requireServerSuccess(
-        await getUserModelImageQualityPrices(currentRow.id, modelName)
+      const [qualityResult, flatResult] = await Promise.all([
+        getUserModelImageQualityPrices(currentRow.id, modelName).then(
+          requireServerSuccess
+        ),
+        getUserModelPrices(currentRow.id).then(requireServerSuccess),
+      ])
+      const flatPrice = flatResult.data?.find(
+        (item) => item.model_name === modelName
       )
-      for (const item of result.data ?? []) {
-        if (
-          IMAGE_QUALITY_LEVELS.includes(item.quality) &&
-          IMAGE_RESOLUTION_LEVELS.includes(item.resolution)
-        ) {
-          draft[item.quality][item.resolution] = String(item.price)
-        }
-      }
-      setImageQualityPriceDraft(draft)
-      setImageQualitySheetOpen(true)
+      const prices = new Set(
+        (qualityResult.data ?? [])
+          .filter((item) => item.enabled)
+          .map((item) => item.price)
+      )
+      if (flatPrice?.enabled) prices.add(flatPrice.price)
+      const differingPrices = prices.size > 1
+      setHasLegacyTierDifferences(differingPrices)
+      const currentPrice =
+        prices.size === 1
+          ? [...prices][0]
+          : (flatPrice?.price ??
+            perCallModels.find((item) => item.model_name === modelName)
+              ?.model_price)
+      setImageUnitPrice(
+        differingPrices || currentPrice === undefined
+          ? ''
+          : String(currentPrice)
+      )
+      setImagePriceModelName(modelName)
+      setImagePriceSheetOpen(true)
     } catch (error) {
-      handleServerError(error, t('加载生图品质定价失败'))
-    }
-  }
-
-  const handleImageQualityDraftChange = (
-    quality: ImageQualityLevel,
-    resolution: ImageResolutionLevel,
-    value: string
-  ) => {
-    if (!/^(\d+(\.\d*)?|\.\d*)?$/.test(value)) return
-    setImageQualityPriceDraft((prev) => ({
-      ...prev,
-      [quality]: {
-        ...prev[quality],
-        [resolution]: value,
-      },
-    }))
-  }
-
-  const handleSaveImageQualityPrivatePrice = async () => {
-    if (!currentRow || !imageQualityModelName) return
-
-    const prices = []
-    for (const quality of IMAGE_QUALITY_LEVELS) {
-      for (const resolution of IMAGE_RESOLUTION_LEVELS) {
-        const raw = imageQualityPriceDraft[quality][resolution]
-        const price = Number(raw)
-        if (raw === '' || !Number.isFinite(price) || price < 0) {
-          toast.error(t('请完整填写所有品质和分辨率的价格'))
-          return
-        }
-        prices.push({ quality, resolution, price, enabled: true })
-      }
-    }
-
-    setIsSavingImageQualityPrice(true)
-    try {
-      const result = await saveUserModelImageQualityPrices(currentRow.id, {
-        model_name: imageQualityModelName,
-        enabled: true,
-        prices,
-      })
-      if (result.success) {
-        toast.success(t('用户品质密价已保存'))
-        setImageQualitySheetOpen(false)
-      } else {
-        toast.error(result.message || t('保存用户品质密价失败'))
-      }
-    } catch (error) {
-      handleServerError(error, t('保存用户品质密价失败'))
+      handleServerError(error, t('Failed to load image price'))
     } finally {
-      setIsSavingImageQualityPrice(false)
+      setIsLoadingImagePrice(false)
     }
   }
 
-  const handleDeleteImageQualityPrivatePrice = async () => {
-    if (!currentRow || !imageQualityModelName) return
+  const handleSaveImagePrivatePrice = async () => {
+    if (!currentRow || !imagePriceModelName || isSavingImagePrice) return
+    const price = Number(imageUnitPrice)
+    if (imageUnitPrice.trim() === '' || !Number.isFinite(price) || price < 0) {
+      toast.error(t('请输入正确的秘价'))
+      return
+    }
+    setIsSavingImagePrice(true)
     try {
       requireServerSuccess(
-        await deleteUserModelImageQualityPrices(
-          currentRow.id,
-          imageQualityModelName
-        )
+        await upsertUserModelPrice(currentRow.id, {
+          model_name: imagePriceModelName,
+          price,
+          enabled: true,
+          unified_image_price: true,
+        })
       )
-      toast.success(t('用户品质密价已删除'))
-      setImageQualityPriceDraft(createEmptyImageQualityPriceDraft())
-      setImageQualitySheetOpen(false)
+      toast.success(t('模型秘价已保存'))
+      setImagePriceSheetOpen(false)
+      void refetchPrivatePrices()
     } catch (error) {
-      handleServerError(error, t('删除用户品质密价失败'))
+      handleServerError(error, t('保存模型秘价失败'))
+    } finally {
+      setIsSavingImagePrice(false)
+    }
+  }
+
+  const handleDeleteImagePrivatePrice = async () => {
+    if (!currentRow || !imagePriceModelName || isSavingImagePrice) return
+    setIsSavingImagePrice(true)
+    try {
+      requireServerSuccess(
+        await deleteUserModelPrice(currentRow.id, imagePriceModelName, true)
+      )
+      toast.success(t('模型秘价已删除'))
+      setImageUnitPrice('')
+      setImagePriceSheetOpen(false)
+      void refetchPrivatePrices()
+    } catch (error) {
+      handleServerError(error, t('删除模型秘价失败'))
+    } finally {
+      setIsSavingImagePrice(false)
     }
   }
 
@@ -808,16 +799,16 @@ export function UsersMutateDrawer({
                         <Button type='button' onClick={handleSavePrivatePrice}>
                           {t('添加/更新')}
                         </Button>
-                        {!selectedPrivatePriceIsPerSecond && (
+                        {supportsUnifiedImagePrice(privateModelName) && (
                           <Button
                             type='button'
                             variant='outline'
-                            disabled={!privateModelName}
+                            disabled={!privateModelName || isLoadingImagePrice}
                             onClick={() =>
-                              openImageQualityPriceSheet(privateModelName)
+                              openImagePriceSheet(privateModelName)
                             }
                           >
-                            {t('配置品质密价')}
+                            {t('Set image price')}
                           </Button>
                         )}
                       </div>
@@ -846,21 +837,22 @@ export function UsersMutateDrawer({
                               </div>
                             </div>
                             <div className='flex shrink-0 gap-2'>
-                              {privateModelUnits.get(item.model_name) !==
-                                'second' && (
+                              {supportsUnifiedImagePrice(item.model_name) && (
                                 <Button
                                   type='button'
                                   variant='outline'
+                                  disabled={isLoadingImagePrice}
                                   onClick={() =>
-                                    openImageQualityPriceSheet(item.model_name)
+                                    openImagePriceSheet(item.model_name)
                                   }
                                 >
-                                  {t('品质密价')}
+                                  {t('Edit image price')}
                                 </Button>
                               )}
                               <Button
                                 type='button'
                                 variant='outline'
+                                disabled={!perCallModelsData}
                                 onClick={() =>
                                   handleDeletePrivatePrice(item.model_name)
                                 }
@@ -931,18 +923,15 @@ export function UsersMutateDrawer({
         />
       )}
 
-      <Sheet
-        open={imageQualitySheetOpen}
-        onOpenChange={setImageQualitySheetOpen}
-      >
+      <Sheet open={imagePriceSheetOpen} onOpenChange={setImagePriceSheetOpen}>
         <SheetContent
           className={sideDrawerContentClassName('sm:max-w-[520px]')}
         >
           <SheetHeader className={sideDrawerHeaderClassName()}>
-            <SheetTitle>{t('用户专属生图品质密价')}</SheetTitle>
+            <SheetTitle>{t('Image private price')}</SheetTitle>
             <SheetDescription>
               {t(
-                '设置后，该用户调用此生图模型时优先按照这里的品质/分辨率价格扣费。'
+                'This user pays the same image unit price for every quality and resolution, for synchronous and asynchronous generation.'
               )}
             </SheetDescription>
           </SheetHeader>
@@ -950,45 +939,35 @@ export function UsersMutateDrawer({
           <div className={sideDrawerFormClassName()}>
             <SideDrawerSection>
               <div className='space-y-1'>
-                <Label>{t('模型')}</Label>
-                <Input value={imageQualityModelName || '-'} readOnly />
+                <Label htmlFor='user-image-price-model'>{t('模型')}</Label>
+                <Input
+                  id='user-image-price-model'
+                  value={imagePriceModelName || '-'}
+                  readOnly
+                />
               </div>
-              <p className='text-muted-foreground text-xs'>
-                {t(
-                  '必须完整填写 low / medium / high 下 1K / 2K / 4K 的价格。最终费用 = 对应单价 × 图片数量 n。'
+              <div className='space-y-2'>
+                <Label htmlFor='user-image-unit-price'>
+                  {t('Price per image')} ({t('USD')})
+                </Label>
+                <Input
+                  id='user-image-unit-price'
+                  inputMode='decimal'
+                  placeholder='0.00'
+                  value={imageUnitPrice}
+                  disabled={isSavingImagePrice}
+                  onChange={(e) => setImageUnitPrice(e.target.value)}
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t('Final cost = unit price × image count.')}
+                </p>
+                {hasLegacyTierDifferences && (
+                  <p className='text-muted-foreground text-xs' role='status'>
+                    {t(
+                      'Existing tier prices differ. Enter a single price to replace them when you save.'
+                    )}
+                  </p>
                 )}
-              </p>
-
-              <div className='space-y-4 rounded-md border p-3'>
-                {IMAGE_QUALITY_LEVELS.map((quality) => (
-                  <div key={quality} className='space-y-2'>
-                    <div className='text-sm font-medium'>{quality}</div>
-                    <div className='grid grid-cols-3 gap-2'>
-                      {IMAGE_RESOLUTION_LEVELS.map((resolution) => (
-                        <div
-                          key={`${quality}-${resolution}`}
-                          className='space-y-1'
-                        >
-                          <Label className='text-xs uppercase'>
-                            {resolution}
-                          </Label>
-                          <Input
-                            inputMode='decimal'
-                            placeholder='0.00'
-                            value={imageQualityPriceDraft[quality][resolution]}
-                            onChange={(e) =>
-                              handleImageQualityDraftChange(
-                                quality,
-                                resolution,
-                                e.target.value
-                              )
-                            }
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
               </div>
             </SideDrawerSection>
           </div>
@@ -997,16 +976,17 @@ export function UsersMutateDrawer({
             <Button
               type='button'
               variant='outline'
-              onClick={handleDeleteImageQualityPrivatePrice}
+              onClick={handleDeleteImagePrivatePrice}
+              disabled={isSavingImagePrice}
             >
-              {t('删除品质密价')}
+              {t('Delete image price')}
             </Button>
             <Button
               type='button'
-              onClick={handleSaveImageQualityPrivatePrice}
-              disabled={isSavingImageQualityPrice}
+              onClick={handleSaveImagePrivatePrice}
+              disabled={isSavingImagePrice}
             >
-              {isSavingImageQualityPrice ? t('Saving...') : t('保存品质密价')}
+              {isSavingImagePrice ? t('Saving...') : t('Save image price')}
             </Button>
           </SheetFooter>
         </SheetContent>

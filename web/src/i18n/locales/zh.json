@@ -1,5 +1,15 @@
 {
   "translation": {
+    "only flat image-priced models can use unified image pricing": "仅按张或按次固定计费的生图模型支持统一图片密价",
+    "Set image price": "设置图片单价",
+    "Edit image price": "修改图片单价",
+    "Image private price": "用户专属图片单价",
+    "This user pays the same image unit price for every quality and resolution, for synchronous and asynchronous generation.": "该用户调用此模型时，所有品质和分辨率均按此单价扣费，同步和异步生图使用相同价格。",
+    "Final cost = unit price × image count.": "最终费用 = 每张单价 × 图片数量。",
+    "Existing tier prices differ. Enter a single price to replace them when you save.": "原有分档价格不同。请填写一个统一单价，保存后替换原有分档价格。",
+    "Delete image price": "删除图片密价",
+    "Save image price": "保存图片单价",
+    "Failed to load image price": "加载图片单价失败",
     "only fixed/per-call or flat per-second priced models can use private price": "仅固定按次、按张或固定每秒单价的模型支持用户密价",
     "price must be finite and greater than or equal to 0": "价格必须是大于或等于 0 的有限数值",
     "Select a model for private pricing": "选择要设置密价的模型",

@@ -1,5 +1,15 @@
 {
   "translation": {
+    "only flat image-priced models can use unified image pricing": "Seuls les modèles d’image à prix fixe par image ou par appel acceptent un prix d’image unifié",
+    "Set image price": "Définir le prix par image",
+    "Edit image price": "Modifier le prix par image",
+    "Image private price": "Prix d’image privé",
+    "This user pays the same image unit price for every quality and resolution, for synchronous and asynchronous generation.": "Cet utilisateur paie le même prix par image pour toutes les qualités et résolutions, en génération synchrone et asynchrone.",
+    "Final cost = unit price × image count.": "Coût final = prix unitaire × nombre d’images.",
+    "Existing tier prices differ. Enter a single price to replace them when you save.": "Les tarifs existants diffèrent. Saisissez un prix unique pour les remplacer lors de l’enregistrement.",
+    "Delete image price": "Supprimer le prix d’image privé",
+    "Save image price": "Enregistrer le prix par image",
+    "Failed to load image price": "Échec du chargement du prix par image",
     "only fixed/per-call or flat per-second priced models can use private price": "Seuls les modèles à prix fixe par requête, par image ou par seconde acceptent un tarif privé",
     "price must be finite and greater than or equal to 0": "Le prix doit être un nombre fini supérieur ou égal à 0",
     "Select a model for private pricing": "Sélectionner un modèle pour le tarif privé",
