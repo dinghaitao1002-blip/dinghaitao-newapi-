@@ -1,5 +1,10 @@
 {
   "translation": {
+    "only fixed/per-call or flat per-second priced models can use private price": "Индивидуальная цена доступна только для моделей с фиксированной ценой за запрос, изображение или секунду",
+    "price must be finite and greater than or equal to 0": "Цена должна быть конечным числом, большим или равным 0",
+    "Select a model for private pricing": "Выберите модель для индивидуальной цены",
+    "Supports private prices per request, per image, and per second. Video prices are charged per second of requested duration. Other billing rules remain unchanged.": "Поддерживаются индивидуальные цены за запрос, изображение и секунду. Видео оплачивается за секунду запрошенной длительности. Остальные правила оплаты не меняются.",
+    "Private price per second, e.g. 0.03": "Индивидуальная цена за секунду, например 0.03",
     "Shared price for synchronous and asynchronous images": "Единая цена синхронных и асинхронных изображений",
     "One price per image applies to both synchronous and asynchronous requests.": "Одна цена за изображение применяется к синхронным и асинхронным запросам.",
     "Advanced pricing": "Расширенные цены",

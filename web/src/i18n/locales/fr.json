@@ -1,5 +1,10 @@
 {
   "translation": {
+    "only fixed/per-call or flat per-second priced models can use private price": "Seuls les modèles à prix fixe par requête, par image ou par seconde acceptent un tarif privé",
+    "price must be finite and greater than or equal to 0": "Le prix doit être un nombre fini supérieur ou égal à 0",
+    "Select a model for private pricing": "Sélectionner un modèle pour le tarif privé",
+    "Supports private prices per request, per image, and per second. Video prices are charged per second of requested duration. Other billing rules remain unchanged.": "Les tarifs privés par requête, par image et par seconde sont pris en charge. Les vidéos sont facturées par seconde de durée demandée. Les autres règles de facturation restent inchangées.",
+    "Private price per second, e.g. 0.03": "Tarif privé par seconde, par exemple 0.03",
     "Shared price for synchronous and asynchronous images": "Prix commun aux images synchrones et asynchrones",
     "One price per image applies to both synchronous and asynchronous requests.": "Le même prix par image s’applique aux requêtes synchrones et asynchrones.",
     "Advanced pricing": "Tarification avancée",

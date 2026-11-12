@@ -188,6 +188,11 @@ export function UsersMutateDrawer({
 
   const privatePrices = privatePricesData?.data || []
   const perCallModels = perCallModelsData?.data || []
+  const privateModelUnits = new Map(
+    perCallModels.map((item) => [item.model_name, item.pricing_unit])
+  )
+  const selectedPrivatePriceIsPerSecond =
+    privateModelUnits.get(privateModelName) === 'second'
 
   const form = useForm<UserFormValues>({
     resolver: zodResolver(userFormSchema),
@@ -747,7 +752,7 @@ export function UsersMutateDrawer({
                   <h3 className='text-sm font-medium'>{t('模型秘价设置')}</h3>
                   <p className='text-muted-foreground text-xs'>
                     {t(
-                      'Supports fixed prices per request or per image. The private unit price takes priority for this user with these billing methods. Other billing rules remain unchanged.'
+                      'Supports private prices per request, per image, and per second. Video prices are charged per second of requested duration. Other billing rules remain unchanged.'
                     )}
                   </p>
 
@@ -756,7 +761,7 @@ export function UsersMutateDrawer({
                       <Select
                         items={perCallModels.map((item) => ({
                           value: item.model_name,
-                          label: `${item.model_name} (${item.model_price})`,
+                          label: `${item.model_name} (${item.model_price}${item.pricing_unit === 'second' ? ` / ${t('second')}` : ''})`,
                         }))}
                         value={privateModelName}
                         onValueChange={(value) =>
@@ -764,10 +769,12 @@ export function UsersMutateDrawer({
                         }
                       >
                         <SelectTrigger
-                          aria-label={t('Select a fixed-price model')}
+                          aria-label={t('Select a model for private pricing')}
                         >
                           <SelectValue
-                            placeholder={t('Select a fixed-price model')}
+                            placeholder={t(
+                              'Select a model for private pricing'
+                            )}
                           />
                         </SelectTrigger>
                         <SelectContent alignItemWithTrigger={false}>
@@ -778,6 +785,8 @@ export function UsersMutateDrawer({
                                 value={item.model_name}
                               >
                                 {item.model_name} / {item.model_price}
+                                {item.pricing_unit === 'second' &&
+                                  ` / ${t('second')}`}
                               </SelectItem>
                             ))}
                           </SelectGroup>
@@ -787,7 +796,11 @@ export function UsersMutateDrawer({
                       <Input
                         value={privateModelPrice}
                         onChange={(e) => setPrivateModelPrice(e.target.value)}
-                        placeholder={t('秘价，例如 0.001')}
+                        placeholder={
+                          selectedPrivatePriceIsPerSecond
+                            ? t('Private price per second, e.g. 0.03')
+                            : t('秘价，例如 0.001')
+                        }
                         inputMode='decimal'
                       />
 
@@ -795,16 +808,18 @@ export function UsersMutateDrawer({
                         <Button type='button' onClick={handleSavePrivatePrice}>
                           {t('添加/更新')}
                         </Button>
-                        <Button
-                          type='button'
-                          variant='outline'
-                          disabled={!privateModelName}
-                          onClick={() =>
-                            openImageQualityPriceSheet(privateModelName)
-                          }
-                        >
-                          {t('配置品质密价')}
-                        </Button>
+                        {!selectedPrivatePriceIsPerSecond && (
+                          <Button
+                            type='button'
+                            variant='outline'
+                            disabled={!privateModelName}
+                            onClick={() =>
+                              openImageQualityPriceSheet(privateModelName)
+                            }
+                          >
+                            {t('配置品质密价')}
+                          </Button>
+                        )}
                       </div>
                     </div>
 
@@ -825,19 +840,24 @@ export function UsersMutateDrawer({
                               </div>
                               <div className='text-muted-foreground text-xs'>
                                 {t('秘价')}: {item.price} /{' '}
+                                {privateModelUnits.get(item.model_name) ===
+                                  'second' && <>{t('second')} / </>}
                                 {item.enabled ? t('启用') : t('关闭')}
                               </div>
                             </div>
                             <div className='flex shrink-0 gap-2'>
-                              <Button
-                                type='button'
-                                variant='outline'
-                                onClick={() =>
-                                  openImageQualityPriceSheet(item.model_name)
-                                }
-                              >
-                                {t('品质密价')}
-                              </Button>
+                              {privateModelUnits.get(item.model_name) !==
+                                'second' && (
+                                <Button
+                                  type='button'
+                                  variant='outline'
+                                  onClick={() =>
+                                    openImageQualityPriceSheet(item.model_name)
+                                  }
+                                >
+                                  {t('品质密价')}
+                                </Button>
+                              )}
                               <Button
                                 type='button'
                                 variant='outline'

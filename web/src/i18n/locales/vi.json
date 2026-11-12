@@ -1,5 +1,10 @@
 {
   "translation": {
+    "only fixed/per-call or flat per-second priced models can use private price": "Chỉ các mô hình có giá cố định theo yêu cầu, theo ảnh hoặc theo giây mới hỗ trợ giá riêng",
+    "price must be finite and greater than or equal to 0": "Giá phải là một số hữu hạn lớn hơn hoặc bằng 0",
+    "Select a model for private pricing": "Chọn mô hình để đặt giá riêng",
+    "Supports private prices per request, per image, and per second. Video prices are charged per second of requested duration. Other billing rules remain unchanged.": "Hỗ trợ giá riêng theo yêu cầu, theo ảnh và theo giây. Video được tính phí theo số giây đã yêu cầu. Các quy tắc tính phí khác không thay đổi.",
+    "Private price per second, e.g. 0.03": "Giá riêng mỗi giây, ví dụ 0.03",
     "Shared price for synchronous and asynchronous images": "Đơn giá chung cho ảnh đồng bộ và bất đồng bộ",
     "One price per image applies to both synchronous and asynchronous requests.": "Cùng một đơn giá mỗi ảnh áp dụng cho yêu cầu đồng bộ và bất đồng bộ.",
     "Advanced pricing": "Định giá nâng cao",

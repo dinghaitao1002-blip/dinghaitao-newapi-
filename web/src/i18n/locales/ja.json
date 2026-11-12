@@ -1,5 +1,10 @@
 {
   "translation": {
+    "only fixed/per-call or flat per-second priced models can use private price": "リクエスト単位、画像単位、または秒単位で固定料金のモデルのみ個別料金を設定できます",
+    "price must be finite and greater than or equal to 0": "料金は0以上の有限の数値である必要があります",
+    "Select a model for private pricing": "個別料金を設定するモデルを選択",
+    "Supports private prices per request, per image, and per second. Video prices are charged per second of requested duration. Other billing rules remain unchanged.": "リクエスト単位、画像単位、秒単位の個別料金に対応しています。動画はリクエストした長さ（秒）に応じて課金されます。その他の課金ルールは変更されません。",
+    "Private price per second, e.g. 0.03": "1秒あたりの個別料金（例：0.03）",
     "Shared price for synchronous and asynchronous images": "同期・非同期画像の共通単価",
     "One price per image applies to both synchronous and asynchronous requests.": "同期・非同期リクエストに同じ画像単価を適用します。",
     "Advanced pricing": "高度な料金設定",

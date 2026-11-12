@@ -1,5 +1,10 @@
 {
   "translation": {
+    "only fixed/per-call or flat per-second priced models can use private price": "仅固定按次、按张或固定每秒单价的模型支持用户密价",
+    "price must be finite and greater than or equal to 0": "价格必须是大于或等于 0 的有限数值",
+    "Select a model for private pricing": "选择要设置密价的模型",
+    "Supports private prices per request, per image, and per second. Video prices are charged per second of requested duration. Other billing rules remain unchanged.": "支持按次、按张和按秒设置用户密价。视频按请求时长（秒）计算费用，其他计费规则保持不变。",
+    "Private price per second, e.g. 0.03": "每秒密价，例如 0.03",
     "Shared price for synchronous and asynchronous images": "同步、异步共用单价",
     "One price per image applies to both synchronous and asynchronous requests.": "同步和异步请求使用相同的每张图片价格。",
     "Advanced pricing": "高级定价",

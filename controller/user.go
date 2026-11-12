@@ -1586,17 +1586,17 @@ func UpsertUserModelPrice(c *gin.Context) {
 		return
 	}
 
-	// Fixed legacy prices and pure per-image expressions share unit overrides.
+	// Fixed legacy prices and pure image/video unit expressions share overrides.
 	isPerCall := false
 	for _, p := range model.GetPricing() {
 		if p.ModelName != modelName {
 			continue
 		}
-		_, isPerCall = model.PrivateModelUnitPrice(p)
+		_, _, isPerCall = model.PrivateModelUnitPrice(p)
 		break
 	}
 	if !isPerCall {
-		common.ApiError(c, errors.New("only fixed/per-call priced models can use private price"))
+		common.ApiError(c, errors.New("only fixed/per-call or flat per-second priced models can use private price"))
 		return
 	}
 
@@ -1656,13 +1656,14 @@ func DeleteUserModelPrice(c *gin.Context) {
 func GetPerCallPricedModels(c *gin.Context) {
 	items := make([]gin.H, 0)
 	for _, p := range model.GetPricing() {
-		price, allowed := model.PrivateModelUnitPrice(p)
+		price, unit, allowed := model.PrivateModelUnitPrice(p)
 		if !allowed {
 			continue
 		}
 		items = append(items, gin.H{
 			"model_name":               p.ModelName,
 			"model_price":              price,
+			"pricing_unit":             unit,
 			"enable_groups":            p.EnableGroup,
 			"supported_endpoint_types": p.SupportedEndpointTypes,
 			"description":              p.Description,

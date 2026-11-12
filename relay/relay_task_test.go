@@ -495,6 +495,82 @@ func TestSharedTaskBillingExpressionSelectionAndFrozenSettlement(t *testing.T) {
 	}
 }
 
+func TestVideoPrivatePricePreservesSecondsAndFrozenSettlement(t *testing.T) {
+	database := setupRelayChannelDB(t)
+	require.NoError(t, database.AutoMigrate(&model.User{}, &model.UserModelPrice{}))
+	const userID = 4243
+	require.NoError(t, database.Create(&model.User{Id: userID, Username: "private-video-billing"}).Error)
+	const publicExpression = `tier("base", u("seconds") * 0.05)`
+	const dynamicExpression = `u("resolution") == "1080p" ? tier("hd", u("seconds") * 0.1) : tier("base", u("seconds") * 0.05)`
+	for _, tc := range []struct {
+		name, expression string
+		privatePrice     *float64
+		disabled, alias  bool
+		wantQuota        int
+	}{
+		{name: "eight seconds at private price", privatePrice: common.GetPointer(0.02), wantQuota: 120000},
+		{name: "no private rule retains public price", wantQuota: 300000},
+		{name: "disabled private rule retains public price", privatePrice: common.GetPointer(0.02), disabled: true, wantQuota: 300000},
+		{name: "explicit zero remains free", privatePrice: common.GetPointer(0.0)},
+		{name: "mapped model keeps client private price", privatePrice: common.GetPointer(0.02), alias: true, wantQuota: 120000},
+		{name: "existing private rule cannot flatten dynamic pricing", expression: dynamicExpression, privatePrice: common.GetPointer(0.02), wantQuota: 300000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			saveBillingConfig(t)
+			name, mapping := "declared-model", ""
+			if tc.alias {
+				name, mapping = "alias-model", `{"alias-model":"declared-model"}`
+			}
+			require.NoError(t, database.Where("user_id = ?", userID).Delete(&model.UserModelPrice{}).Error)
+			if tc.privatePrice != nil {
+				require.NoError(t, model.UpsertUserModelPrice(userID, name, *tc.privatePrice, !tc.disabled))
+			}
+			expression := tc.expression
+			if expression == "" {
+				expression = publicExpression
+			}
+			expressions, err := common.Marshal(map[string]string{name: expression})
+			require.NoError(t, err)
+			modes, err := common.Marshal(map[string]string{name: billing_setting.BillingModeTieredExpr})
+			require.NoError(t, err)
+			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+				"billing_setting.billing_mode": string(modes), "billing_setting.billing_expr": string(expressions),
+				billing_setting.PluginBillingExprOption: `{}`, "group_ratio_setting.group_ratio": `{"default":1.5}`,
+			}))
+			registry := pluginruntime.NewRegistry()
+			source := strings.Replace(billingFallbackPlugin, `fetchMode:"per_task"`, `fetchMode:"per_task",usageSchema:{seconds:{type:"number",unit:"second",description:"Video generation unit price"},resolution:{enum:["720p","1080p"]}}`, 1)
+			source += `export function extractUsage(){return {seconds:8,resolution:"720p"};}`
+			plugin, err := registry.Register(source, pluginruntime.Options{})
+			require.NoError(t, err)
+			ctx, info := newTaskSubmitContext(t, name, mapping)
+			ctx.Set("group", "default")
+			ctx.Set("id", userID)
+			ctx.Set(pluginruntime.ContextKeyPinnedPlugin, pluginruntime.PinnedPlugin{Generation: registry.Generation(), Plugin: plugin})
+			info.UserId, info.OriginModelName, info.UserGroup, info.UsingGroup = userID, name, "default", "default"
+			_, taskErr := RelayTaskSubmit(ctx, info)
+			require.NotNil(t, taskErr) // Stops at reservation; no upstream request is made.
+			assert.NotEqual(t, "model_price_error", taskErr.Code)
+			require.NotNil(t, info.TieredBillingSnapshot)
+			assert.Equal(t, tc.wantQuota, info.PriceData.Quota)
+			assert.Equal(t, float64(8), info.TieredBillingSnapshot.UsageFacts["seconds"])
+			assert.Equal(t, 1.5, info.TieredBillingSnapshot.GroupRatio)
+			frozenExpression := info.TieredBillingSnapshot.ExprString
+			// Editing both public and user prices cannot reprice an in-flight task.
+			require.NoError(t, model.UpsertUserModelPrice(userID, name, 1, true))
+			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{"billing_setting.billing_expr": `{}`}))
+			settlement, usage, err := service.EvaluateTaskCompletionUsage(info.TieredBillingSnapshot, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantQuota, settlement.ActualQuotaAfterGroup)
+			assert.Equal(t, float64(8), usage["seconds"])
+			settlement, usage, err = service.EvaluateTaskCompletionUsage(info.TieredBillingSnapshot, map[string]any{"seconds": float64(4)})
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantQuota/2, settlement.ActualQuotaAfterGroup)
+			assert.Equal(t, float64(4), usage["seconds"])
+			assert.Equal(t, frozenExpression, info.TieredBillingSnapshot.ExprString)
+		})
+	}
+}
+
 func TestSharedEndpointBillingKeepsOrdinaryAndPluginPricesSeparate(t *testing.T) {
 	require.NoError(t, i18n.Init())
 	database := setupRelayChannelDB(t)

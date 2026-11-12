@@ -153,6 +153,7 @@ export interface UserModelImageQualityPrice {
 export interface PerCallPricedModel {
   model_name: string
   model_price: number
+  pricing_unit?: 'request' | 'image' | 'second'
   enable_groups?: string[]
   supported_endpoint_types?: string[]
   description?: string

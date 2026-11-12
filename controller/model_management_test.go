@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -109,7 +110,7 @@ func modelManagementRequest(t *testing.T, handler gin.HandlerFunc, method, path 
 	return recorder
 }
 
-func TestUserPrivatePricingIncludesImageExpressions(t *testing.T) {
+func TestUserPrivatePricingIncludesImageAndVideoUnitExpressions(t *testing.T) {
 	db := modelManagementDB(t, "sqlite", "")
 	require.NoError(t, db.AutoMigrate(&model.UserModelPrice{}, &model.ModelImageQualityPrice{}))
 	t.Cleanup(model.InvalidatePricingCache)
@@ -118,33 +119,38 @@ func TestUserPrivatePricingIncludesImageExpressions(t *testing.T) {
 	require.NoError(t, db.Create(&user).Error)
 	channel := model.Channel{Name: "private-image-channel", Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled}
 	require.NoError(t, db.Create(&channel).Error)
-	for _, name := range []string{"gpt-image-2.6-flare", "private-task-image", "private-token", "private-dynamic-image", "private-legacy"} {
+	for _, name := range []string{"gpt-image-2.6-flare", "private-task-image", "private-token", "private-dynamic-image", "private-legacy", "private-video", "private-dynamic-video", "private-legacy-video"} {
 		require.NoError(t, db.Create(&model.Ability{Group: "default", Model: name, ChannelId: channel.Id, Enabled: true}).Error)
 	}
 	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"private-legacy":0.02}`))
 	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
-		"billing_setting.billing_mode": `{"gpt-image-2.6-flare":"tiered_expr","private-task-image":"tiered_expr","private-token":"tiered_expr","private-dynamic-image":"tiered_expr"}`,
-		"billing_setting.billing_expr": `{"gpt-image-2.6-flare":"tier(\"image\", fixed(0.007)) * image_count","private-task-image":"tier(\"base\", u(\"image_count\") * 0.009)","private-token":"tier(\"base\", p * 2 + c * 8)","private-dynamic-image":"tier(\"image\", fixed(0.007)) * image_count * (param(\"quality\") == \"hd\" ? 2 : 1)"}`,
+		"billing_setting.billing_mode": `{"gpt-image-2.6-flare":"tiered_expr","private-task-image":"tiered_expr","private-token":"tiered_expr","private-dynamic-image":"tiered_expr","private-video":"tiered_expr","private-dynamic-video":"tiered_expr","private-legacy-video":"video_per_second"}`,
+		"billing_setting.billing_expr": `{"gpt-image-2.6-flare":"tier(\"image\", fixed(0.007)) * image_count","private-task-image":"tier(\"base\", u(\"image_count\") * 0.009)","private-token":"tier(\"base\", p * 2 + c * 8)","private-dynamic-image":"tier(\"image\", fixed(0.007)) * image_count * (param(\"quality\") == \"hd\" ? 2 : 1)","private-video":"tier(\"base\", u(\"seconds\") * 0.05)","private-dynamic-video":"u(\"resolution\") == \"1080p\" ? tier(\"hd\", u(\"seconds\") * 0.1) : tier(\"base\", u(\"seconds\") * 0.05)","private-legacy-video":"{\"720p\":0.03,\"1080p\":0.06}"}`,
 	}))
 	var listed struct {
 		Success bool `json:"success"`
 		Data    []struct {
-			ModelName  string  `json:"model_name"`
-			ModelPrice float64 `json:"model_price"`
+			ModelName   string  `json:"model_name"`
+			ModelPrice  float64 `json:"model_price"`
+			PricingUnit string  `json:"pricing_unit"`
 		} `json:"data"`
 	}
 	modelManagementRequest(t, GetPerCallPricedModels, http.MethodGet, "/api/user/per-call-models", nil, &listed)
 	require.True(t, listed.Success)
 	prices := make(map[string]float64, len(listed.Data))
+	units := make(map[string]string, len(listed.Data))
 	for _, item := range listed.Data {
 		prices[item.ModelName] = item.ModelPrice
+		units[item.ModelName] = item.PricingUnit
 	}
-	assert.Equal(t, map[string]float64{"gpt-image-2.6-flare": 0.007, "private-task-image": 0.009, "private-legacy": 0.02}, prices)
+	assert.Equal(t, map[string]float64{"gpt-image-2.6-flare": 0.007, "private-task-image": 0.009, "private-legacy": 0.02, "private-video": 0.05}, prices)
+	assert.Equal(t, map[string]string{"gpt-image-2.6-flare": "image", "private-task-image": "image", "private-legacy": "request", "private-video": "second"}, units)
 	for _, tc := range []struct {
 		name    string
 		allowed bool
 	}{
 		{"gpt-image-2.6-flare", true}, {"private-task-image", true}, {"private-legacy", true}, {"private-token", false}, {"private-dynamic-image", false},
+		{"private-video", true}, {"private-dynamic-video", false}, {"private-legacy-video", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
@@ -167,6 +173,10 @@ func TestUserPrivatePricingIncludesImageExpressions(t *testing.T) {
 			}
 		})
 	}
+	for _, price := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -0.01} {
+		_, _, err := model.NormalizeUserModelPriceInput("private-video", price)
+		assert.Error(t, err)
+	}
 }
 
 func TestUserPrivatePricingProviderUnitPriceSelection(t *testing.T) {
@@ -177,17 +187,22 @@ func TestUserPrivatePricingProviderUnitPriceSelection(t *testing.T) {
 		name    string
 		pricing model.Pricing
 		price   float64
+		unit    string
 		ok      bool
 	}{
-		{"ordinary default wins", model.Pricing{BillingMode: billing_setting.BillingModeTieredExpr, BillingExpr: ordinary, BillingPluginVariants: []model.PricingPluginVariant{variant}}, 0.007, true},
-		{"provider only free image price", model.Pricing{BillingMode: billing_setting.BillingModeTieredExpr, BillingPluginVariants: []model.PricingPluginVariant{variant}}, 0, true},
-		{"dynamic model cannot become flat", model.Pricing{BillingMode: billing_setting.BillingModeTieredExpr, BillingExpr: `tier("base", p * 2)`, QuotaType: 1, ModelPrice: 0.03, BillingPluginVariants: []model.PricingPluginVariant{variant}}, 0, false},
-		{"legacy fixed remains unchanged", model.Pricing{QuotaType: 1, ModelPrice: 0.03, BillingPluginVariants: []model.PricingPluginVariant{variant}}, 0.03, true},
+		{"ordinary default wins", model.Pricing{BillingMode: billing_setting.BillingModeTieredExpr, BillingExpr: ordinary, BillingPluginVariants: []model.PricingPluginVariant{variant}}, 0.007, "image", true},
+		{"provider only free image price", model.Pricing{BillingMode: billing_setting.BillingModeTieredExpr, BillingPluginVariants: []model.PricingPluginVariant{variant}}, 0, "image", true},
+		{"flat video price", model.Pricing{BillingMode: billing_setting.BillingModeTieredExpr, BillingExpr: `tier("base", u("seconds") * 0.05)`}, 0.05, "second", true},
+		{"provider only video price", model.Pricing{BillingMode: billing_setting.BillingModeTieredExpr, BillingPluginVariants: []model.PricingPluginVariant{{BillingMode: billing_setting.BillingModeTieredExpr, BillingExpr: `tier("base", u("seconds") * 0.05)`}}}, 0.05, "second", true},
+		{"dynamic model cannot become flat", model.Pricing{BillingMode: billing_setting.BillingModeTieredExpr, BillingExpr: `tier("base", p * 2)`, QuotaType: 1, ModelPrice: 0.03, BillingPluginVariants: []model.PricingPluginVariant{variant}}, 0, "", false},
+		{"legacy fixed remains unchanged", model.Pricing{QuotaType: 1, ModelPrice: 0.03, BillingPluginVariants: []model.PricingPluginVariant{variant}}, 0.03, "request", true},
+		{"legacy video table is not a flat private price", model.Pricing{BillingMode: billing_setting.BillingModeVideoPerSecond, QuotaType: 1, ModelPrice: 0.03}, 0, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			price, ok := model.PrivateModelUnitPrice(tc.pricing)
+			price, unit, ok := model.PrivateModelUnitPrice(tc.pricing)
 			assert.Equal(t, tc.ok, ok)
 			assert.Equal(t, tc.price, price)
+			assert.Equal(t, tc.unit, unit)
 		})
 	}
 }

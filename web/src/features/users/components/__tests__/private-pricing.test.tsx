@@ -25,7 +25,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 
-import type { PerCallPricedModel, User } from '../../types'
+import type { PerCallPricedModel, User, UserModelPrice } from '../../types'
 import { UsersMutateDrawer } from '../users-mutate-drawer'
 import { UsersProvider } from '../users-provider'
 
@@ -53,7 +53,8 @@ async function openPricing(
   model: PerCallPricedModel = {
     model_name: 'image-custom',
     model_price: 0.05,
-  }
+  },
+  privatePrices: UserModelPrice[] = []
 ) {
   useAuthStore
     .getState()
@@ -66,6 +67,7 @@ async function openPricing(
     if (url === '/api/user/model-prices/per-call-models') {
       data = [model]
     }
+    if (url === '/api/user/23/model-prices') data = privatePrices
     return { data: { success: true, data } }
   })
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -79,11 +81,11 @@ async function openPricing(
   await screen.findByDisplayValue('Private price user')
   const user = userEvent.setup()
   await user.click(
-    screen.getByRole('combobox', { name: 'Select a fixed-price model' })
+    screen.getByRole('combobox', { name: 'Select a model for private pricing' })
   )
   await user.click(
     await screen.findByRole('option', {
-      name: `${model.model_name} / ${model.model_price}`,
+      name: `${model.model_name} / ${model.model_price}${model.pricing_unit === 'second' ? ' / second' : ''}`,
     })
   )
   return user
@@ -103,7 +105,7 @@ it.each(['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])(
 
     expect(
       screen.getByText(
-        'Supports fixed prices per request or per image. The private unit price takes priority for this user with these billing methods. Other billing rules remain unchanged.'
+        'Supports private prices per request, per image, and per second. Video prices are charged per second of requested duration. Other billing rules remain unchanged.'
       )
     ).toBeVisible()
     await user.type(screen.getByPlaceholderText('秘价，例如 0.001'), '0.004')
@@ -120,6 +122,63 @@ it.each(['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])(
     expect(screen.getByPlaceholderText('秘价，例如 0.001')).toHaveValue('')
   }
 )
+
+it('saves a per-second video private price and does not offer image quality pricing', async () => {
+  const post = vi
+    .spyOn(api, 'post')
+    .mockResolvedValue({ data: { success: true } })
+  const user = await openPricing({
+    model_name: 'veo-3.1-fast',
+    model_price: 0.05,
+    pricing_unit: 'second',
+  })
+
+  expect(
+    screen.queryByRole('button', { name: '配置品质密价' })
+  ).not.toBeInTheDocument()
+  const input = screen.getByPlaceholderText(
+    'Private price per second, e.g. 0.03'
+  )
+  await user.type(input, '0.025')
+  await user.click(screen.getByRole('button', { name: '添加/更新' }))
+
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith('/api/user/23/model-prices', {
+      model_name: 'veo-3.1-fast',
+      price: 0.025,
+      enabled: true,
+    })
+  )
+})
+
+it('labels an existing video private price per second and deletes only that user override', async () => {
+  const remove = vi
+    .spyOn(api, 'delete')
+    .mockResolvedValue({ data: { success: true } })
+  const user = await openPricing(
+    { model_name: 'omni-1.2-flash', model_price: 0.06, pricing_unit: 'second' },
+    [
+      {
+        id: 1,
+        user_id: target.id,
+        model_name: 'omni-1.2-flash',
+        price: 0.02,
+        enabled: true,
+      },
+    ]
+  )
+
+  expect(screen.getByText('秘价: 0.02 / second / 启用')).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: '品质密价' })
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: '删除' }))
+  await waitFor(() =>
+    expect(remove).toHaveBeenCalledWith('/api/user/23/model-prices', {
+      params: { model_name: 'omni-1.2-flash' },
+    })
+  )
+})
 
 it('saves an explicit zero private price for the selected user without changing the public model price', async () => {
   const post = vi

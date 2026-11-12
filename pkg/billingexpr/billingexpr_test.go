@@ -99,6 +99,34 @@ func TestFixedPriceQuotaBoundariesAndUnsupportedTaskSnapshots(t *testing.T) {
 	assert.Nil(t, trace.FixedPrice)
 }
 
+func TestTaskUnitPriceRejectsDynamicAndMixedPricing(t *testing.T) {
+	for _, tc := range []struct {
+		name, expression, key string
+		price                 float64
+		ok                    bool
+	}{
+		{"video seconds", `tier("base", u("seconds") * 0.05)`, "seconds", 0.05, true},
+		{"zero", `tier("base", u("seconds") * 0)`, "seconds", 0, true},
+		{"reversed bare", `0.05 * u("seconds")`, "seconds", 0.05, true},
+		{"version and parentheses", `v1: (tier("base", (u("seconds")) * (0.05)))`, "seconds", 0.05, true},
+		{"wrong usage key", `tier("base", u("image_count") * 0.05)`, "seconds", 0, false},
+		{"images still supported", `tier("base", u("image_count") * 0.007)`, "image_count", 0.007, true},
+		{"resolution tiers", `u("resolution") == "1080p" ? tier("hd", u("seconds") * 0.1) : tier("base", u("seconds") * 0.05)`, "seconds", 0, false},
+		{"unreachable branch", `true ? tier("base", u("seconds") * 0.05) : tier("other", u("seconds") * 0.1)`, "seconds", 0, false},
+		{"constant fee", `tier("base", 0.1 + u("seconds") * 0.05)`, "seconds", 0, false},
+		{"mixed usage", `tier("base", u("image_count") * 0.01 + u("seconds") * 0.05)`, "seconds", 0, false},
+		{"request multiplier", `tier("base", u("seconds") * 0.05) * (param("fast") == true ? 2 : 1)`, "seconds", 0, false},
+		{"negative", `tier("base", u("seconds") * -0.05)`, "seconds", 0, false},
+		{"nonfinite", `tier("base", u("seconds") * 1e999)`, "seconds", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			price, ok := billingexpr.TaskUnitPrice(tc.expression, tc.key)
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.price, price)
+		})
+	}
+}
+
 func TestImageUnitPriceRejectsDynamicAndNonImagePricing(t *testing.T) {
 	for _, tc := range []struct {
 		name, expression string

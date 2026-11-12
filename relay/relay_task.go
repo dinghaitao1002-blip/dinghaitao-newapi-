@@ -276,11 +276,18 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 				return nil, service.TaskErrorWrapper(fmt.Errorf("task model %s pricing is not configured for plugin %s", modelName, pluginKey), "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 			}
 		}
-		// Override only a pure image unit price, never token, video or dynamic
+		// Override only a pure image/second unit price, never token or dynamic
 		// usage rules. The task snapshot retains this price through completion.
-		if _, flatImage := billingexpr.ImageUnitPrice(exprStr, true); flatImage {
+		privateUsageKey := ""
+		for _, key := range []string{"image_count", "seconds"} {
+			if _, flat := billingexpr.TaskUnitPrice(exprStr, key); flat {
+				privateUsageKey = key
+				break
+			}
+		}
+		if privateUsageKey != "" {
 			if price, configured := model.GetUserModelPrice(info.UserId, modelName); configured {
-				exprStr = `tier("user_private", u("image_count") * ` + strconv.FormatFloat(price, 'g', -1, 64) + `)`
+				exprStr = `tier("user_private", u("` + privateUsageKey + `") * ` + strconv.FormatFloat(price, 'g', -1, 64) + `)`
 			}
 		}
 		var facts map[string]any

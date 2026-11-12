@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"time"
 
@@ -24,30 +25,42 @@ type UserModelPrice struct {
 
 // PrivateModelUnitPrice reports whether the existing per-user unit-price
 // override can represent this model without flattening dynamic/token pricing.
+// The returned unit describes the stored override; it is not persisted twice.
 // Ordinary image pricing is the display default when provider prices coexist.
-func PrivateModelUnitPrice(pricing Pricing) (float64, bool) {
+func PrivateModelUnitPrice(pricing Pricing) (float64, string, bool) {
+	// Legacy resolution tables need a separate private-price representation.
+	// Their base price cannot stand in for every resolution's per-second price.
+	if pricing.BillingMode == billing_setting.BillingModeVideoPerSecond {
+		return 0, "", false
+	}
 	if pricing.BillingMode == billing_setting.BillingModeTieredExpr {
 		if price, ok := billingexpr.ImageUnitPrice(pricing.BillingExpr, false); ok {
-			return price, true
+			return price, "image", true
 		}
 		if price, ok := billingexpr.ImageUnitPrice(pricing.BillingExpr, true); ok {
-			return price, true
+			return price, "image", true
+		}
+		if price, ok := billingexpr.TaskUnitPrice(pricing.BillingExpr, "seconds"); ok {
+			return price, "second", true
 		}
 		if strings.TrimSpace(pricing.BillingExpr) != "" {
-			return 0, false
+			return 0, "", false
 		}
 	} else if pricing.QuotaType == 1 {
-		return pricing.ModelPrice, true
+		return pricing.ModelPrice, "request", true
 	}
 	for _, variant := range pricing.BillingPluginVariants {
 		if variant.BillingMode != billing_setting.BillingModeTieredExpr {
 			continue
 		}
 		if price, ok := billingexpr.ImageUnitPrice(variant.BillingExpr, true); ok {
-			return price, true
+			return price, "image", true
+		}
+		if price, ok := billingexpr.TaskUnitPrice(variant.BillingExpr, "seconds"); ok {
+			return price, "second", true
 		}
 	}
-	return 0, false
+	return 0, "", false
 }
 
 func NormalizeUserModelPriceInput(modelName string, price float64) (string, float64, error) {
@@ -55,8 +68,8 @@ func NormalizeUserModelPriceInput(modelName string, price float64) (string, floa
 	if modelName == "" {
 		return "", 0, errors.New("model_name is required")
 	}
-	if price < 0 {
-		return "", 0, errors.New("price must be greater than or equal to 0")
+	if price < 0 || math.IsNaN(price) || math.IsInf(price, 0) {
+		return "", 0, errors.New("price must be finite and greater than or equal to 0")
 	}
 	return modelName, price, nil
 }
