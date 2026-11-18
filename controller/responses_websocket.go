@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/relay"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -39,6 +41,32 @@ var responsesWSRequestEngine = sync.OnceValue(func() *gin.Engine {
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		c.Next()
 	}, middleware.BodyStorageCleanup(), middleware.TokenAuth(), middleware.ModelRequestRateLimit(), func(c *gin.Context) {
+		if setting.GetModelConcurrencyConfig().Enabled {
+			var request struct {
+				Model    string `json:"model"`
+				Response *struct {
+					Model string `json:"model"`
+				} `json:"response"`
+			}
+			// The runner receives the raw WS envelope. Do not cache it as the
+			// HTTP body: state.handle replaces it with the normalized request.
+			body, readErr := io.ReadAll(c.Request.Body)
+			_ = c.Request.Body.Close()
+			c.Request.Body = io.NopCloser(bytes.NewReader(body))
+			if readErr == nil && common.Unmarshal(body, &request) == nil {
+				modelName := request.Model
+				// A wrapped response replaces the entire outer request in the WS
+				// normalizer; an outer model must not shadow the nested one.
+				if request.Response != nil {
+					modelName = request.Response.Model
+				}
+				finish, allowed := middleware.BeginModelConcurrency(c, modelName)
+				if !allowed {
+					return
+				}
+				defer finish()
+			}
+		}
 		state := c.Request.Context().Value(responsesWSRequestContextKey{}).(*responsesWSRequestState)
 		state.apiError = state.handle(c)
 		if state.apiError != nil {

@@ -568,6 +568,17 @@ func executeTaskSubmissionWith(
 	relayInfo *relaycommon.RelayInfo,
 	submit taskSubmitAttempt,
 ) (*taskSubmissionOutcome, *taskdto.TaskError) {
+	finishConcurrency, concurrencyErr := service.BeginModelConcurrency(c, relayInfo.OriginModelName)
+	if concurrencyErr != nil {
+		var limit *common.ModelConcurrencyLimitError
+		if errors.As(concurrencyErr, &limit) {
+			c.Header("Retry-After", "1")
+			message := i18n.T(c, "model_concurrency.exceeded", map[string]any{"Model": relayInfo.OriginModelName, "Limit": limit.Limit, "Current": limit.Current})
+			return nil, service.TaskErrorWrapperLocal(errors.New(message), "model_concurrency_exceeded", http.StatusTooManyRequests)
+		}
+		return nil, service.TaskErrorWrapperLocal(errors.New(i18n.T(c, "model_concurrency.unavailable")), "model_concurrency_unavailable", http.StatusServiceUnavailable)
+	}
+	defer finishConcurrency()
 	policy := service.RequestPolicy(c)
 	diagnostics := newTaskPluginSubmitDiagnostics(c)
 	diagnostics.start(relayInfo)
@@ -791,6 +802,11 @@ func executeTaskSubmissionWith(
 		return nil, taskErr
 	}
 	durable = true
+	if !immediateTerminal {
+		if err := service.TransferModelConcurrency(c, model.TaskModelConcurrencyIdentity(task).ID); err != nil {
+			common.SysError("task concurrency transfer pending: " + err.Error())
+		}
+	}
 	stage = "settle"
 	diagnostics.durable(task)
 	diagnostics.settleStart(task, result.Quota)
@@ -883,7 +899,7 @@ func respondTaskSubmissionError(c *gin.Context, taskErr *taskdto.TaskError) {
 
 // respondTaskError 统一输出 Task 错误响应（含 429 限流提示改写）
 func respondTaskError(c *gin.Context, taskErr *taskdto.TaskError) {
-	if taskErr.StatusCode == http.StatusTooManyRequests {
+	if taskErr.StatusCode == http.StatusTooManyRequests && taskErr.Code != "model_concurrency_exceeded" {
 		taskErr.Message = i18n.T(c, i18n.MsgRelayGroupUpstreamSaturated)
 	}
 	c.JSON(taskErr.StatusCode, taskErr)

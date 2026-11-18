@@ -538,6 +538,9 @@ func (t *Task) Snapshot() taskSnapshot {
 func (Task *Task) Update() error {
 	var err error
 	err = DB.Save(Task).Error
+	if err == nil && isTerminalConcurrencyTask(Task) {
+		ReleaseTaskModelConcurrency(TaskModelConcurrencyIdentity(Task))
+	}
 	return err
 }
 
@@ -558,6 +561,9 @@ func (t *Task) UpdateWithStatus(fromStatus TaskStatus) (bool, error) {
 	result := DB.Model(t).Where("status = ?", fromStatus).Select("*").Updates(t)
 	if result.Error != nil {
 		return false, result.Error
+	}
+	if result.RowsAffected > 0 && isTerminalConcurrencyTask(t) {
+		ReleaseTaskModelConcurrency(TaskModelConcurrencyIdentity(t))
 	}
 	return result.RowsAffected > 0, nil
 }

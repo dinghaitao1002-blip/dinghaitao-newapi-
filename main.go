@@ -149,6 +149,9 @@ func main() {
 		}
 		return a
 	}
+	if err := service.StartModelConcurrencyRecovery(context.Background()); err != nil {
+		common.SysError("model concurrency initialization pending: " + err.Error())
+	}
 
 	// Register the periodic channel test, upstream model update, and async task
 	// polling (Midjourney / Suno / video) jobs as scheduled system tasks

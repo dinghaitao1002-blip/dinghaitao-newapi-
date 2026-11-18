@@ -132,6 +132,14 @@ func Distribute() func(c *gin.Context) {
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		generates := c.Request.Method == http.MethodPost || (c.Request.Method == http.MethodGet && c.Request.URL.Path == "/v1/realtime")
+		if generates && shouldSelectChannel && !isDeferredImageAdmission(c) {
+			finish, allowed := BeginModelConcurrency(c, modelRequest.Model)
+			if !allowed {
+				return
+			}
+			defer finish()
+		}
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)

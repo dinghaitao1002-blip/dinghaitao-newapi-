@@ -18,10 +18,12 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -296,7 +298,12 @@ func TestImageAsyncRetryRequiresAnUnambiguousUnwrittenFailure(t *testing.T) {
 }
 
 func TestImageAsyncWorkerAndResultDoNotRegenerateOrRebill(t *testing.T) {
+	require.NoError(t, i18n.Init())
 	db, r := setupImageAsyncControllerFixture(t)
+	require.NoError(t, db.AutoMigrate(&model.Task{}))
+	previousConcurrency := setting.ModelConcurrencyConfig2JSONString()
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(`{"enabled":true,"rules":[{"model":"async-fixture","enabled":true,"default_user_limit":1}]}`))
+	t.Cleanup(func() { require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(previousConcurrency)) })
 	previousPrices := ratio_setting.ModelPrice2JSONString()
 	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"async-fixture":0.01}`))
 	t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrices)) })
@@ -387,6 +394,14 @@ func TestImageAsyncWorkerAndResultDoNotRegenerateOrRebill(t *testing.T) {
 	}
 	require.NoError(t, common.Unmarshal(replayResponse.Body.Bytes(), &duplicate))
 	assert.Equal(t, accepted.ID, duplicate.ID)
+	blockedRequest := httptest.NewRequest(http.MethodPost, "/v1/images/generations?async=true", strings.NewReader(`{"model":"async-fixture","prompt":"second API key shares the same user limit"}`))
+	blockedRequest.Header.Set("Authorization", "Bearer sk-"+secondToken.Key+fmt.Sprintf("-%d", channel.Id))
+	blockedRequest.Header.Set("Content-Type", "application/json")
+	blockedResponse := httptest.NewRecorder()
+	engine.ServeHTTP(blockedResponse, blockedRequest)
+	require.Equal(t, http.StatusTooManyRequests, blockedResponse.Code, blockedResponse.Body.String())
+	assert.Contains(t, blockedResponse.Body.String(), "model_concurrency_exceeded")
+	assert.Zero(t, calls.Load(), "queue admission and duplicate retries must not start upstream work")
 	get := func(key, suffix string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/v1/images/tasks/"+accepted.ID+suffix, nil)
 		req.Header.Set("Authorization", "Bearer sk-"+key)
@@ -401,6 +416,10 @@ func TestImageAsyncWorkerAndResultDoNotRegenerateOrRebill(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 	r.execute(claimed, "fixture-worker")
+	usage, err := common.GetModelConcurrencyUsage(context.Background(), setting.GetModelConcurrencyConfig().Rules)
+	require.NoError(t, err)
+	require.Len(t, usage, 1)
+	assert.Zero(t, usage[0].Total, "a terminal worker must release its durable slot")
 	stored, err := model.GetImageAsyncTask(accepted.ID, user.Id, token.Id)
 	require.NoError(t, err)
 	require.Equal(t, model.ImageAsyncStatusSucceeded, stored.Status, "%+v", stored)

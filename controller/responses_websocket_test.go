@@ -38,6 +38,63 @@ import (
 
 var responsesWSTestUserSequence atomic.Int64
 
+func TestResponsesWSRequestRunnerSharesUserModelConcurrency(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	user, token := setupResponsesWSRequestTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Task{}, &model.ImageAsyncTask{}))
+	previousConfig := setting.ModelConcurrencyConfig2JSONString()
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(`{"enabled":true,"rules":[{"model":"ws-concurrency-fixture","enabled":true,"default_user_limit":1}]}`))
+	t.Cleanup(func() { require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(previousConfig)) })
+	otherKey := &model.Token{UserId: user.Id, Key: "responseswsotherkey", Status: common.TokenStatusEnabled, ExpiredTime: -1, RemainQuota: 100}
+	require.NoError(t, model.DB.Create(otherKey).Error)
+	firstRunner, _ := newResponsesWSTestRunner(t, token)
+	otherRunner, _ := newResponsesWSTestRunner(t, otherKey)
+	request := func() *http.Request {
+		return httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"ws-concurrency-fixture","input":"hello"}`))
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	done := make(chan *types.NewAPIError, 1)
+	var calls atomic.Int32
+	go func() {
+		done <- firstRunner(request(), "ws-concurrency-first", func(c *gin.Context) *types.NewAPIError {
+			calls.Add(1)
+			_, envelopeCached := c.Get(common.KeyBodyStorage)
+			assert.False(t, envelopeCached, "admission must not cache the raw WS envelope before normalization")
+			var body struct {
+				Model string `json:"model"`
+			}
+			if err := common.UnmarshalBodyReusable(c, &body); err != nil || body.Model != "ws-concurrency-fixture" {
+				return types.NewErrorWithStatusCode(errors.New("concurrency middleware consumed the body"), types.ErrorCodeInvalidRequest, http.StatusBadRequest)
+			}
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	select {
+	case <-started:
+	case err := <-done:
+		require.FailNow(t, "first WebSocket response was rejected", "%v", err)
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "first WebSocket response did not start")
+	}
+	nestedRequest := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"type":"response.create","model":"unlimited-outer-model","response":{"model":"ws-concurrency-fixture","input":"hello"}}`))
+	limited := otherRunner(nestedRequest, "ws-concurrency-limited", func(*gin.Context) *types.NewAPIError {
+		calls.Add(1)
+		return nil
+	})
+	require.NotNil(t, limited)
+	assert.Equal(t, http.StatusTooManyRequests, limited.StatusCode)
+	assert.Equal(t, "model_concurrency_exceeded", limited.ToOpenAIError().Code)
+	assert.Equal(t, int32(1), calls.Load())
+	close(release)
+	require.Nil(t, <-done)
+	// Keep using the same socket runner: concurrency belongs to each create,
+	// so a completed response immediately frees admission for the next one.
+	require.Nil(t, firstRunner(request(), "ws-concurrency-next", func(*gin.Context) *types.NewAPIError { calls.Add(1); return nil }))
+	assert.Equal(t, int32(2), calls.Load())
+}
+
 func setupResponsesWSRequestTest(t *testing.T) (*model.User, *model.Token) {
 	t.Helper()
 	previousDB := model.DB

@@ -254,8 +254,10 @@ func serveTaskPluginProtocol(
 	// disconnecting that observer must not cancel submission, persistence, or
 	// billing settlement; the submission keeps its own bounded lifetime.
 	func() {
+		detachedContext, cancelDetached := service.DetachModelConcurrencyContext(c, clientRequest.Context())
+		defer cancelDetached()
 		submissionContext, cancelSubmission := context.WithTimeout(
-			context.WithoutCancel(clientRequest.Context()),
+			detachedContext,
 			deps.submissionTimeout,
 		)
 		c.Request = clientRequest.Clone(submissionContext)

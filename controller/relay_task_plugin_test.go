@@ -14,11 +14,13 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -29,6 +31,67 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
+
+func TestExecuteTaskSubmissionConcurrencyRetainsAcceptedTask(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	events := []string{}
+	db := setupTaskSubmissionDatabase(t, true, &events)
+	require.NoError(t, db.AutoMigrate(&model.ImageAsyncTask{}))
+	t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(&model.ImageAsyncTask{})) })
+	previousConfig := setting.ModelConcurrencyConfig2JSONString()
+	previousRedis, previousLog, previousRetry := common.RedisEnabled, common.LogConsumeEnabled, common.RetryTimes
+	common.RedisEnabled, common.LogConsumeEnabled, common.RetryTimes = false, false, 0
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(`{"enabled":true,"rules":[{"model":"plugin-model","enabled":true,"default_user_limit":1}]}`))
+	t.Cleanup(func() {
+		common.RedisEnabled, common.LogConsumeEnabled, common.RetryTimes = previousRedis, previousLog, previousRetry
+		require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(previousConfig))
+	})
+	c := taskSubmissionTestContext()
+	c.Set("id", 1)
+	billing := &taskSubmissionTestBilling{events: &events}
+	info := taskSubmissionRelayInfo(billing)
+	info.OriginModelName += "@temperature:0.2"
+	outcome, taskErr := executeTaskSubmissionWith(c, info, func(*gin.Context, *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *dto.TaskError) {
+		return &relay.TaskSubmitResult{Platform: "plugin", UpstreamTaskID: "provider-task"}, nil
+	})
+	require.Nil(t, taskErr)
+	require.NotNil(t, outcome)
+	usage, err := common.GetModelConcurrencyUsage(context.Background(), setting.GetModelConcurrencyConfig().Rules)
+	require.NoError(t, err)
+	require.Len(t, usage, 1)
+	assert.Equal(t, 1, usage[0].Total, "returning a task ID must retain the slot")
+	blocked := taskSubmissionTestContext()
+	blocked.Set("id", 1)
+	blockedEvents := []string{}
+	_, taskErr = executeTaskSubmissionWith(blocked, taskSubmissionRelayInfo(&taskSubmissionTestBilling{events: &blockedEvents}), func(*gin.Context, *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *dto.TaskError) {
+		t.Error("concurrency rejection must happen before submission or billing")
+		return nil, nil
+	})
+	require.NotNil(t, taskErr)
+	assert.Equal(t, http.StatusTooManyRequests, taskErr.StatusCode)
+	assert.Equal(t, "model_concurrency_exceeded", taskErr.Code)
+	assert.Empty(t, blockedEvents)
+	oldStatus := outcome.Task.Status
+	outcome.Task.Status, outcome.Task.Progress = model.TaskStatusFailure, "100%"
+	won, err := outcome.Task.UpdateWithStatus(oldStatus)
+	require.NoError(t, err)
+	require.True(t, won)
+	usage, err = common.GetModelConcurrencyUsage(context.Background(), setting.GetModelConcurrencyConfig().Rules)
+	require.NoError(t, err)
+	assert.Zero(t, usage[0].Total, "failure/cancellation/timeout uses the terminal CAS release")
+	// Immediate synchronous plugin results release normally when HTTP finishes.
+	next := taskSubmissionTestContext()
+	next.Set("id", 1)
+	nextInfo := taskSubmissionRelayInfo(&taskSubmissionTestBilling{events: &events})
+	nextInfo.PublicTaskID = "task_second"
+	_, taskErr = executeTaskSubmissionWith(next, nextInfo, func(*gin.Context, *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *dto.TaskError) {
+		return &relay.TaskSubmitResult{Platform: "plugin", Immediate: &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}}, nil
+	})
+	require.Nil(t, taskErr)
+	usage, err = common.GetModelConcurrencyUsage(context.Background(), setting.GetModelConcurrencyConfig().Rules)
+	require.NoError(t, err)
+	assert.Zero(t, usage[0].Total)
+}
 
 type taskSubmissionTestBilling struct {
 	events     *[]string
@@ -673,6 +736,12 @@ func TestRespondTaskSubmissionErrorWithoutCause(t *testing.T) {
 	assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "request_failed", Source: "system"}, events[0].Decision)
 	assert.Equal(t, http.StatusServiceUnavailable, events[0].Status)
 	assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "local_rejection", Source: "system"}, decideTaskRetry(c, &dto.TaskError{StatusCode: http.StatusForbidden, LocalError: true, Message: "billing"}, 2), "local errors stop once the status rules do not force a retry")
+	limitedResponse := httptest.NewRecorder()
+	limited, _ := gin.CreateTestContext(limitedResponse)
+	message := "Model plugin-model has reached its concurrency limit (1/1). Wait for an active request to finish and retry."
+	respondTaskError(limited, &dto.TaskError{Code: "model_concurrency_exceeded", Message: message, StatusCode: http.StatusTooManyRequests, LocalError: true})
+	assert.Equal(t, http.StatusTooManyRequests, limited.Writer.Status())
+	assert.Contains(t, limitedResponse.Body.String(), message)
 }
 
 func TestExecuteTaskSubmissionRefundsWhenFinalReserveFails(t *testing.T) {

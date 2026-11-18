@@ -2,6 +2,8 @@
 # 中文（繁體）翻譯檔案
 
 # Errors returned to AI clients
+model_concurrency.exceeded: "模型 {{.Model}} 已達到並行請求上限（{{.Current}}/{{.Limit}}），請等待正在處理的請求完成後重試。"
+model_concurrency.unavailable: "模型並行請求控制暫時無法使用，請稍後重試。"
 common.database_error: "資料庫出錯，請聯繫管理員"
 auth.user_banned: "使用者已被封禁"
 token.get_info_failed: "獲取令牌資訊失敗，請稍後重試"

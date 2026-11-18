@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	hostdto "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -121,6 +122,24 @@ func submitImageAsyncTask(c *gin.Context) {
 		value := hex.EncodeToString(h[:])
 		task.IdempotencyHash = &value
 	}
+	existing, lookupErr := model.FindImageAsyncTaskByIdempotency(task)
+	if lookupErr != nil {
+		if errors.Is(lookupErr, model.ErrImageAsyncConflict) {
+			imageAsyncError(c, 409, "idempotency_conflict", "Idempotency-Key was already used with a different request")
+		} else {
+			imageAsyncError(c, 503, "image_task_storage_error", "Unable to look up image task")
+		}
+		return
+	}
+	if existing != nil {
+		respondImageAsyncAccepted(c, existing)
+		return
+	}
+	finishConcurrency, allowed := middleware.BeginModelConcurrency(c, task.Model)
+	if !allowed {
+		return
+	}
+	defer finishConcurrency()
 	// Serialize local admission against the disk budget. The DB additionally
 	// enforces queue limits and idempotency across processes.
 	r.admission.Lock()
@@ -159,14 +178,23 @@ func submitImageAsyncTask(c *gin.Context) {
 		}
 		return
 	}
-	c.Header("Preference-Applied", "respond-async")
-	c.Header("Location", "/v1/images/tasks/"+stored.ID)
-	c.Header("Retry-After", "3")
-	c.JSON(http.StatusAccepted, imageAsyncTaskResponse(stored))
+	if created {
+		if err := service.TransferModelConcurrency(c, model.ImageTaskModelConcurrencyIdentity(stored).ID); err != nil {
+			common.SysError("image task concurrency transfer pending: " + err.Error())
+		}
+	}
+	respondImageAsyncAccepted(c, stored)
 	select {
 	case r.wake <- struct{}{}:
 	default:
 	}
+}
+
+func respondImageAsyncAccepted(c *gin.Context, task *model.ImageAsyncTask) {
+	c.Header("Preference-Applied", "respond-async")
+	c.Header("Location", "/v1/images/tasks/"+task.ID)
+	c.Header("Retry-After", "3")
+	c.JSON(http.StatusAccepted, imageAsyncTaskResponse(task))
 }
 
 func imageAsyncTaskResponse(task *model.ImageAsyncTask) gin.H {

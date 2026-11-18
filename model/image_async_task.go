@@ -184,6 +184,27 @@ func CreateImageAsyncTask(task *ImageAsyncTask, globalLimit, userLimit int) (*Im
 	return result, created, nil
 }
 
+// FindImageAsyncTaskByIdempotency lets an accepted retry retrieve its original
+// task before concurrency admission, even when that task occupies the last slot.
+// CreateImageAsyncTask still resolves concurrent duplicates transactionally.
+func FindImageAsyncTaskByIdempotency(task *ImageAsyncTask) (*ImageAsyncTask, error) {
+	if task.IdempotencyHash == nil {
+		return nil, nil
+	}
+	var existing ImageAsyncTask
+	err := DB.Where("token_id = ? AND idempotency_hash = ?", task.TokenID, *task.IdempotencyHash).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if existing.UserID != task.UserID || existing.Fingerprint != task.Fingerprint || existing.Operation != task.Operation {
+		return nil, ErrImageAsyncConflict
+	}
+	return &existing, nil
+}
+
 func GetImageAsyncTask(id string, userID, tokenID int) (*ImageAsyncTask, error) {
 	if userID <= 0 || tokenID <= 0 || !imageAsyncIDPattern.MatchString(id) {
 		return nil, nil
@@ -294,7 +315,8 @@ func CompleteImageAsyncTask(id, owner string, httpStatus int, errorCode, msg str
 	if httpStatus < 200 || httpStatus > 599 {
 		return errors.New("invalid image async result status")
 	}
-	return DB.Transaction(func(tx *gorm.DB) error {
+	var completed *ImageAsyncTask
+	err := DB.Transaction(func(tx *gorm.DB) error {
 		task, err := getImageAsyncTaskLocked(tx, id)
 		if err != nil {
 			return err
@@ -304,6 +326,7 @@ func CompleteImageAsyncTask(id, owner string, httpStatus int, errorCode, msg str
 			status = ImageAsyncStatusSucceeded
 		}
 		if task.Status == status && task.Owner == owner && task.HTTPStatus == httpStatus && task.ErrorCode == errorCode {
+			completed = task
 			return nil
 		}
 		if !imageAsyncLeaseValid(task, owner) {
@@ -320,8 +343,16 @@ func CompleteImageAsyncTask(id, owner string, httpStatus int, errorCode, msg str
 		if status == ImageAsyncStatusFailed && task.BillingState == ImageAsyncBillingSettled && !strings.HasPrefix(errorCode, "violation_fee.") {
 			return ErrImageAsyncBillingFinalized
 		}
-		return tx.Model(task).Updates(map[string]any{"status": status, "http_status": httpStatus, "error_code": imageAsyncTrim(errorCode, 128), "error_message": imageAsyncTrim(msg, 4096), "finished_at": common.GetTimestamp(), "lease_until": 0}).Error
+		if err := tx.Model(task).Updates(map[string]any{"status": status, "http_status": httpStatus, "error_code": imageAsyncTrim(errorCode, 128), "error_message": imageAsyncTrim(msg, 4096), "finished_at": common.GetTimestamp(), "lease_until": 0}).Error; err != nil {
+			return err
+		}
+		completed = task
+		return nil
 	})
+	if err == nil && completed != nil {
+		ReleaseTaskModelConcurrency(ImageTaskModelConcurrencyIdentity(completed))
+	}
+	return err
 }
 
 func imageAsyncTrim(s string, max int) string {
@@ -352,6 +383,7 @@ func ListImageAsyncRefundPending(node string, limit int) ([]*ImageAsyncTask, err
 // A caller's earlier queue snapshot must not decide a paid task's final state.
 func RecoverExpiredImageAsyncTask(id, node string, hasResult bool, code, msg string) (bool, error) {
 	changed := false
+	var completed *ImageAsyncTask
 	var userID int
 	var tokenKey string
 	err := DB.Transaction(func(tx *gorm.DB) error {
@@ -379,6 +411,7 @@ func RecoverExpiredImageAsyncTask(id, node string, hasResult bool, code, msg str
 			return err
 		}
 		changed = true
+		completed = task
 		return nil
 	})
 	if err == nil && userID > 0 {
@@ -386,6 +419,9 @@ func RecoverExpiredImageAsyncTask(id, node string, hasResult bool, code, msg str
 	}
 	if err != nil {
 		return false, err
+	}
+	if completed != nil {
+		ReleaseTaskModelConcurrency(ImageTaskModelConcurrencyIdentity(completed))
 	}
 	return changed, nil
 }

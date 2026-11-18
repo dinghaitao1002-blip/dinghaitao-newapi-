@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { ModelConcurrencySection } from '../concurrency-limits/model-concurrency-section'
 import { RateLimitSection } from '../request-limits/rate-limit-section'
 import { SSRFSection } from '../request-limits/ssrf-section'
 import { TokenLimitSection } from '../request-limits/token-limit-section'
@@ -41,6 +42,11 @@ const SECURITY_SECTIONS = [
     ),
   },
 
+  {
+    id: 'concurrency',
+    titleKey: 'Concurrency Limits',
+    build: () => <ModelConcurrencySection />,
+  },
   {
     id: 'ssrf',
     titleKey: 'SSRF Protection',

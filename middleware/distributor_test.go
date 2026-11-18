@@ -6,19 +6,112 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	hostdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDistributeModelConcurrencyHoldsUntilResponseCompletes(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	setupDashboardAuthMiddlewareTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Task{}, &model.ImageAsyncTask{}, &model.Channel{}, &model.Ability{}))
+	previousConfig := setting.ModelConcurrencyConfig2JSONString()
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(previousConfig))
+		common.MemoryCacheEnabled = previousCache
+	})
+	for _, test := range []struct {
+		name, method, path string
+		stream             bool
+	}{
+		{"synchronous", http.MethodPost, "/v1/chat/completions", false},
+		{"streaming", http.MethodPost, "/v1/chat/completions", true},
+		{"gemini native", http.MethodPost, "/v1beta/models/concurrency-native:generateContent", false},
+		{"realtime", http.MethodGet, "/v1/realtime", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			modelName := "concurrency-" + strings.ReplaceAll(test.name, " ", "-")
+			if test.name == "gemini native" {
+				modelName = "concurrency-native"
+			}
+			config := common.ModelConcurrencyConfig{Enabled: true, Rules: []common.ModelConcurrencyRule{{Model: modelName, Enabled: true, DefaultUserLimit: 1}}}
+			data, err := common.Marshal(config)
+			require.NoError(t, err)
+			require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(string(data)))
+			channel := model.Channel{Type: constant.ChannelTypeOpenAI, Name: modelName, Key: "fixture", Status: common.ChannelStatusEnabled, Models: modelName, Group: "default"}
+			require.NoError(t, model.DB.Create(&channel).Error)
+			require.NoError(t, channel.UpdateAbilities(nil))
+			started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var calls atomic.Int32
+			engine := gin.New()
+			engine.Handle(test.method, test.path, BodyStorageCleanup(), func(c *gin.Context) {
+				c.Set("id", 8071)
+				common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+				service.GetChannelConstraints(c).AddPin(hostdto.ChannelPin{ChannelId: channel.Id, Source: hostdto.PinSourceToken, Rank: hostdto.PinRankToken})
+			}, Distribute(), func(c *gin.Context) {
+				if calls.Add(1) == 1 {
+					if test.stream {
+						c.Header("Content-Type", "text/event-stream")
+						_, _ = c.Writer.WriteString("data: ready\n\n")
+						c.Writer.Flush()
+					}
+					close(started)
+					<-release
+				}
+				c.Status(http.StatusOK)
+			})
+			request := func(requestModel string) *http.Request {
+				path := test.path
+				if test.method == http.MethodGet {
+					path += "?model=" + requestModel
+				}
+				r := httptest.NewRequest(test.method, path, strings.NewReader(fmt.Sprintf(`{"model":%q,"messages":[]}`, requestModel)))
+				r.Header.Set("Content-Type", "application/json")
+				return r
+			}
+			first := httptest.NewRecorder()
+			go func() { defer close(done); engine.ServeHTTP(first, request(modelName)) }()
+			select {
+			case <-started:
+			case <-done:
+				require.FailNow(t, "first request was rejected", first.Body.String())
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "first request did not reach the relay")
+			}
+			second := httptest.NewRecorder()
+			secondModel := modelName
+			if test.name == "synchronous" {
+				secondModel += "@temperature:0.2"
+			}
+			engine.ServeHTTP(second, request(secondModel))
+			assert.Equal(t, http.StatusTooManyRequests, second.Code, second.Body.String())
+			assert.Contains(t, second.Body.String(), "model_concurrency_exceeded")
+			assert.Equal(t, int32(1), calls.Load(), "a rejected request must stop before billing or relay")
+			close(release)
+			<-done
+			third := httptest.NewRecorder()
+			engine.ServeHTTP(third, request(modelName))
+			assert.Equal(t, http.StatusOK, third.Code, third.Body.String())
+			assert.Equal(t, int32(2), calls.Load())
+		})
+	}
+}
 
 func TestChannelMatchesExpectedTaskPluginUsesGenericChannelSetting(t *testing.T) {
 	channel := &model.Channel{Type: constant.ChannelTypeTaskPlugin}

@@ -47,8 +47,10 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 	// bridge. Only the in-request wait and the response write observe the
 	// client connection.
 	func() {
+		detachedContext, cancelDetached := service.DetachModelConcurrencyContext(c, clientRequest.Context())
+		defer cancelDetached()
 		submissionContext, cancelSubmission := context.WithTimeout(
-			context.WithoutCancel(clientRequest.Context()),
+			detachedContext,
 			deps.submissionTimeout,
 		)
 		c.Request = clientRequest.Clone(submissionContext)

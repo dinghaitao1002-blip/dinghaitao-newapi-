@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -19,9 +20,38 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/bytedance/gopkg/util/gopool"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDetachedPluginSubmissionStopsAfterConcurrencyOwnershipLoss(t *testing.T) {
+	limiter := common.NewModelConcurrencyLimiter(nil, common.ModelConcurrencyLeaseTTL)
+	lease, err := limiter.Acquire(context.Background(), "detached-concurrency-fixture", 8191, common.ModelConcurrencyRule{Model: "detached-concurrency-fixture", Enabled: true, DefaultUserLimit: 1})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, lease.Release(context.Background())) }()
+	lostLease, cancelLostLease := context.WithCancel(context.Background())
+	defer cancelLostLease()
+	state := &modelConcurrencyRequest{lease: lease, lostLease: lostLease, cancelLostLease: cancelLostLease}
+	clientContext, disconnect := context.WithCancel(context.Background())
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil).WithContext(clientContext)
+	c.Set(modelConcurrencyRequestKey, state)
+	submissionContext, finish := DetachModelConcurrencyContext(c, clientContext)
+	defer finish()
+	disconnect()
+	assert.NoError(t, submissionContext.Err(), "client disconnect must preserve accepted submission semantics")
+	// Simulate eviction/expiry from the ownership store without waiting for a
+	// timer. A failed real renewal must cancel every detached submission/hook.
+	require.NoError(t, lease.Release(context.Background()))
+	require.ErrorIs(t, state.renew(context.Background()), common.ErrModelConcurrencyLeaseExpired)
+	select {
+	case <-submissionContext.Done():
+		assert.ErrorIs(t, submissionContext.Err(), context.Canceled)
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "detached submission ignored concurrency ownership loss")
+	}
+}
 
 type taskPollingFetchAdaptor struct {
 	mu           sync.Mutex

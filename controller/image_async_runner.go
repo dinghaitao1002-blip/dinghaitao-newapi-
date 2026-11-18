@@ -329,6 +329,9 @@ func (r *imageAsyncRunner) recoverAndClean() {
 	if _, err := model.ExpireQueuedImageAsyncTasks(r.node); err != nil {
 		common.SysError("image async queue expiry failed: " + err.Error())
 	}
+	if err := service.ReconcileModelConcurrency(r.ctx); err != nil {
+		common.SysError("image async concurrency recovery failed: " + err.Error())
+	}
 	tasks, err := model.ListExpiredRunningImageTasks(r.node)
 	if err != nil {
 		common.SysError("image async recovery lookup failed: " + err.Error())
