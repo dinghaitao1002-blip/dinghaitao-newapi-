@@ -44,9 +44,13 @@ interface ComboboxInputProps {
   allowCustomValue?: boolean
   openOnFocus?: boolean
   disabled?: boolean
+  name?: string
+  onBlur?: React.FocusEventHandler<HTMLInputElement>
+  ref?: React.Ref<HTMLInputElement>
   onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>
   'aria-label'?: string
   'aria-labelledby'?: string
+  'aria-describedby'?: string
   'aria-invalid'?: React.AriaAttributes['aria-invalid']
 }
 
@@ -62,9 +66,13 @@ export function ComboboxInput({
   allowCustomValue = false,
   openOnFocus = true,
   disabled = false,
+  name,
+  onBlur,
+  ref: forwardedRef,
   onKeyDown,
   'aria-label': ariaLabel,
   'aria-labelledby': ariaLabelledBy,
+  'aria-describedby': ariaDescribedBy,
   'aria-invalid': ariaInvalid,
 }: ComboboxInputProps) {
   const { t } = useTranslation()
@@ -75,6 +83,11 @@ export function ComboboxInput({
   const [highlightedIndex, setHighlightedIndex] = React.useState(-1)
   const containerRef = React.useRef<HTMLDivElement>(null)
   const inputRef = React.useRef<HTMLInputElement>(null)
+  React.useImperativeHandle<HTMLInputElement | null, HTMLInputElement | null>(
+    forwardedRef,
+    () => inputRef.current,
+    []
+  )
   const listRef = React.useRef<HTMLUListElement>(null)
   const dropdownRef = React.useRef<HTMLDivElement>(null)
   // The dropdown is portaled so scrolling ancestors cannot clip it. It goes
@@ -227,11 +240,13 @@ export function ComboboxInput({
       <Input
         ref={inputRef}
         id={id}
+        name={name}
         type='text'
         role='combobox'
         disabled={disabled}
         aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
+        aria-describedby={ariaDescribedBy}
         aria-invalid={ariaInvalid}
         aria-expanded={!!showDropdown}
         aria-controls={
@@ -272,9 +287,10 @@ export function ComboboxInput({
           }
           pointerFocusRef.current = false
         }}
-        onBlur={() => {
+        onBlur={(event) => {
           setOpen(false)
           setSearchValue('')
+          onBlur?.(event)
         }}
         onKeyDown={(event) => {
           handleKeyDown(event)

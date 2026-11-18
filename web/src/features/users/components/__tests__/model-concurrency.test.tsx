@@ -166,6 +166,9 @@ beforeEach(() => {
     if (url === '/api/option/model_concurrency') {
       return { data: { success: true, data: structuredClone(serverData) } }
     }
+    if (url === '/api/models/') {
+      return { data: { success: true, data: { items: [], total: 0 } } }
+    }
     if (url === '/api/group/') {
       return { data: { success: true, data: ['default'] } }
     }
@@ -261,7 +264,7 @@ describe('user model concurrency entry points', () => {
     })
     expect(limit).toHaveValue(40)
     expect(
-      within(editor).getByRole('textbox', { name: 'Model name' })
+      within(editor).getByRole('combobox', { name: 'Model name' })
     ).toBeDisabled()
     expect(
       within(editor).getByRole('spinbutton', {

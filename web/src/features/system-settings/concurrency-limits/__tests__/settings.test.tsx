@@ -84,6 +84,9 @@ beforeEach(() => {
     ],
   }
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (url === '/api/models/') {
+      return { data: { success: true, data: { items: [], total: 0 } } }
+    }
     if (String(url).startsWith('/api/user/search?')) {
       return {
         data: {
@@ -139,12 +142,12 @@ describe('model concurrency settings', () => {
     )
     const dialog = screen.getByRole('dialog')
     expect(
-      within(dialog).getByRole('textbox', { name: 'Model name' })
+      within(dialog).getByRole('combobox', { name: 'Model name' })
     ).toHaveAccessibleDescription(
       'Parameter suffixes share the base model concurrency limit. A separate enabled rule takes priority.'
     )
     await userEvent.type(
-      within(dialog).getByRole('textbox', { name: 'Model name' }),
+      within(dialog).getByRole('combobox', { name: 'Model name' }),
       'image-fast'
     )
     await userEvent.click(
@@ -366,7 +369,7 @@ describe('model concurrency settings', () => {
       await screen.findByRole('button', { name: 'Add model rule' })
     )
     await userEvent.type(
-      screen.getByRole('textbox', { name: 'Model name' }),
+      screen.getByRole('combobox', { name: 'Model name' }),
       'image-pro'
     )
     await userEvent.click(

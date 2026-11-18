@@ -17,12 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
+import { Combobox } from '@/components/ui/combobox'
 import {
   Form,
   FormControl,
@@ -42,6 +44,7 @@ import {
   modelConcurrencyRuleSchema,
   type ModelConcurrencyRuleValues,
 } from './lib/schema'
+import { getConcurrencyModelCatalog } from './model-catalog'
 
 const FORM_ID = 'model-concurrency-rule-form'
 const emptyRule: ModelConcurrencyRule = {
@@ -67,6 +70,21 @@ export function ConcurrencyRuleDialog(props: {
   onSave: (rule: ModelConcurrencyRule) => void
 }) {
   const { t } = useTranslation()
+  const catalog = useQuery({
+    queryKey: ['model-concurrency-catalog'],
+    queryFn: getConcurrencyModelCatalog,
+    enabled: props.open && !props.focusedUser,
+    staleTime: 60_000,
+    retry: false,
+    meta: { errorToast: false },
+  })
+  const modelOptions = useMemo(
+    () =>
+      [...new Set([...(catalog.data ?? []), ...props.models])]
+        .sort()
+        .map((model) => ({ value: model, label: model })),
+    [catalog.data, props.models]
+  )
   const form = useForm<ModelConcurrencyRuleValues>({
     resolver: zodResolver(modelConcurrencyRuleSchema),
     defaultValues: emptyRule,
@@ -163,9 +181,17 @@ export function ConcurrencyRuleDialog(props: {
               <FormItem>
                 <FormLabel>{t('Model name')}</FormLabel>
                 <FormControl>
-                  <Input
-                    {...field}
-                    autoComplete='off'
+                  <Combobox
+                    ref={field.ref}
+                    name={field.name}
+                    value={field.value}
+                    onBlur={field.onBlur}
+                    onValueChange={(value) => field.onChange(value ?? '')}
+                    options={modelOptions}
+                    allowCustomValue
+                    openOnFocus={false}
+                    placeholder={t('Choose or enter a model name')}
+                    emptyText={t('No matching models')}
                     disabled={!!props.focusedUser && !!props.rule}
                   />
                 </FormControl>
@@ -174,6 +200,41 @@ export function ConcurrencyRuleDialog(props: {
                     'Parameter suffixes share the base model concurrency limit. A separate enabled rule takes priority.'
                   )}
                 </FormDescription>
+                {!props.focusedUser && (
+                  <>
+                    <p className='text-muted-foreground text-sm'>
+                      {t(
+                        'Choose a model from the list, or enter a custom model name.'
+                      )}
+                    </p>
+                    <div className='flex flex-wrap items-center gap-2'>
+                      {catalog.isFetching && (
+                        <p
+                          role='status'
+                          className='text-muted-foreground text-sm'
+                        >
+                          {t('Loading models...')}
+                        </p>
+                      )}
+                      {catalog.isError && (
+                        <p role='alert' className='text-destructive text-sm'>
+                          {t(
+                            'Failed to load models. Retry or enter a model name.'
+                          )}
+                        </p>
+                      )}
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        disabled={catalog.isFetching}
+                        onClick={() => void catalog.refetch()}
+                      >
+                        {t('Refresh models')}
+                      </Button>
+                    </div>
+                  </>
+                )}
                 <FormMessage />
               </FormItem>
             )}
