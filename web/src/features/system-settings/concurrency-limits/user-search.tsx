@@ -27,10 +27,16 @@ import { Label } from '@/components/ui/label'
 import { searchUsers } from '@/features/users/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
+export type ConcurrencySelectedUser = {
+  id: number
+  username: string
+  display_name?: string
+}
+
 // The shared select-style Combobox filters its loaded options locally. Search
 // the existing user endpoint first so this form also works with large user pools.
 export function ConcurrencyUserSearch(props: {
-  onSelect: (userId: number) => void
+  onSelect: (user: ConcurrencySelectedUser) => void
   excludedUserIds: number[]
   disabled?: boolean
 }) {
@@ -47,6 +53,9 @@ export function ConcurrencyUserSearch(props: {
     },
     enabled: !!keyword,
   })
+  const currentQuery = !!keyword && search.trim() === keyword
+  const canSelectResults =
+    currentQuery && users.isSuccess && !users.isFetching && !props.disabled
   return (
     <div className='space-y-2'>
       <Label htmlFor='concurrency-user-search'>{t('Find a user')}</Label>
@@ -77,18 +86,18 @@ export function ConcurrencyUserSearch(props: {
           {users.isFetching ? t('Searching...') : t('Search')}
         </Button>
       </div>
-      {users.isError && (
+      {currentQuery && users.isError && (
         <p className='text-destructive text-sm' role='alert'>
           {t('Failed to search users. Try again.')}
         </p>
       )}
-      {users.data && (
+      {canSelectResults && (
         <Combobox
           aria-label={t('Select user to add an override')}
           placeholder={t('Select user to add an override')}
           value={null}
           disabled={props.disabled}
-          options={users.data.map((user) => ({
+          options={(users.data ?? []).map((user) => ({
             value: String(user.id),
             label: `${user.username} (#${user.id})`,
             description: user.display_name || undefined,
@@ -96,7 +105,28 @@ export function ConcurrencyUserSearch(props: {
           }))}
           emptyText={t('No users found')}
           onValueChange={(value: string | null) => {
-            if (value) props.onSelect(Number(value))
+            if (!value || !canSelectResults) return
+            const selected = users.data?.find(
+              (user) => String(user.id) === value
+            )
+            if (
+              !selected ||
+              !Number.isSafeInteger(selected.id) ||
+              selected.id <= 0 ||
+              props.excludedUserIds.includes(selected.id) ||
+              typeof selected.username !== 'string' ||
+              !selected.username.trim()
+            ) {
+              return
+            }
+            const identity: ConcurrencySelectedUser = {
+              id: selected.id,
+              username: selected.username,
+            }
+            if (typeof selected.display_name === 'string') {
+              identity.display_name = selected.display_name
+            }
+            props.onSelect(identity)
           }}
         />
       )}

@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useState } from 'react'
 import { useFieldArray, useFormContext } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
@@ -31,7 +32,10 @@ import { Input } from '@/components/ui/input'
 
 import type { ConcurrencyFocusedUser } from './api'
 import type { ModelConcurrencyRuleValues } from './lib/schema'
-import { ConcurrencyUserSearch } from './user-search'
+import {
+  ConcurrencyUserSearch,
+  type ConcurrencySelectedUser,
+} from './user-search'
 
 export function ConcurrencyUserOverrides(props: {
   focusedUser?: ConcurrencyFocusedUser
@@ -43,6 +47,9 @@ export function ConcurrencyUserOverrides(props: {
     name: 'user_limits',
   })
   const users = form.watch('user_limits')
+  const [selectedUsers, setSelectedUsers] = useState<
+    Record<number, ConcurrencySelectedUser>
+  >({})
   return (
     <div className='space-y-3 border-t pt-4'>
       <h4 className='text-sm font-semibold'>
@@ -53,9 +60,26 @@ export function ConcurrencyUserOverrides(props: {
           <ConcurrencyUserSearch
             excludedUserIds={users.map((user) => user.user_id)}
             disabled={users.length >= 1000}
-            onSelect={(userId) =>
-              userFields.append({ user_id: userId, max_concurrent: 0 })
-            }
+            onSelect={(selectedUser) => {
+              setSelectedUsers((previous) => ({
+                ...previous,
+                [selectedUser.id]: selectedUser,
+              }))
+              if (users.some((user) => user.user_id === selectedUser.id)) {
+                return
+              }
+              const emptyIndex = users.findIndex((user) =>
+                Number.isNaN(user.user_id)
+              )
+              if (emptyIndex >= 0) {
+                userFields.update(emptyIndex, {
+                  ...users[emptyIndex],
+                  user_id: selectedUser.id,
+                })
+                return
+              }
+              userFields.append({ user_id: selectedUser.id, max_concurrent: 0 })
+            }}
           />
           <Button
             type='button'
@@ -73,6 +97,8 @@ export function ConcurrencyUserOverrides(props: {
         if (props.focusedUser && user.user_id !== props.focusedUser.id) {
           return null
         }
+        const selectedUser =
+          selectedUsers[users[index]?.user_id ?? user.user_id]
         return (
           <div
             key={user.id}
@@ -82,6 +108,14 @@ export function ConcurrencyUserOverrides(props: {
                 : 'grid grid-cols-2 items-start gap-2 rounded-lg border p-3 sm:grid-cols-[1fr_1fr_auto]'
             }
           >
+            {!props.focusedUser && selectedUser && (
+              <p className='col-span-2 text-sm font-medium break-all sm:col-span-3'>
+                <span>{selectedUser.username}</span>{' '}
+                <span className='text-muted-foreground'>
+                  #{selectedUser.id}
+                </span>
+              </p>
+            )}
             {!props.focusedUser && (
               <FormField
                 control={form.control}
@@ -98,14 +132,16 @@ export function ConcurrencyUserOverrides(props: {
                         type='number'
                         min={1}
                         step={1}
+                        readOnly={!!selectedUser}
                         value={Number.isNaN(field.value) ? '' : field.value}
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          if (selectedUser) return
                           field.onChange(
                             event.target.value === ''
                               ? Number.NaN
                               : Number(event.target.value)
                           )
-                        }
+                        }}
                       />
                     </FormControl>
                     <FormMessage />
