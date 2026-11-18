@@ -36,7 +36,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 
 import { SettingsSwitchItem } from '../components/settings-form-layout'
-import type { ModelConcurrencyRule } from './api'
+import type { ConcurrencyFocusedUser, ModelConcurrencyRule } from './api'
 import { ConcurrencyUserOverrides } from './concurrency-user-overrides'
 import {
   modelConcurrencyRuleSchema,
@@ -63,6 +63,7 @@ export function ConcurrencyRuleDialog(props: {
   onOpenChange: (open: boolean) => void
   rule: ModelConcurrencyRule | null
   models: string[]
+  focusedUser?: ConcurrencyFocusedUser
   onSave: (rule: ModelConcurrencyRule) => void
 }) {
   const { t } = useTranslation()
@@ -71,8 +72,26 @@ export function ConcurrencyRuleDialog(props: {
     defaultValues: emptyRule,
   })
   useEffect(() => {
-    if (props.open) form.reset(props.rule ?? emptyRule)
-  }, [props.open, props.rule, form])
+    if (!props.open) return
+    const values = props.rule ?? emptyRule
+    if (
+      !props.focusedUser ||
+      values.user_limits.some((user) => user.user_id === props.focusedUser?.id)
+    ) {
+      form.reset(values)
+      return
+    }
+    form.reset({
+      ...values,
+      user_limits: [
+        ...values.user_limits,
+        {
+          user_id: props.focusedUser.id,
+          max_concurrent: values.default_user_limit,
+        },
+      ],
+    })
+  }, [props.open, props.rule, props.focusedUser, form])
   const submit = (values: ModelConcurrencyRuleValues) => {
     if (
       props.models.includes(values.model) &&
@@ -83,7 +102,25 @@ export function ConcurrencyRuleDialog(props: {
       })
       return
     }
-    props.onSave(values)
+    if (props.focusedUser) {
+      const userId = props.focusedUser.id
+      const selectedOverride = values.user_limits.find(
+        (user) => user.user_id === userId
+      )
+      if (!selectedOverride) return
+      const original = props.rule ?? { ...emptyRule, model: values.model }
+      const hasOverride = original.user_limits.some(
+        (user) => user.user_id === userId
+      )
+      const userLimits = hasOverride
+        ? original.user_limits.map((user) =>
+            user.user_id === userId ? selectedOverride : user
+          )
+        : [...original.user_limits, selectedOverride]
+      props.onSave({ ...original, user_limits: userLimits })
+    } else {
+      props.onSave(values)
+    }
     props.onOpenChange(false)
   }
   return (
@@ -126,7 +163,11 @@ export function ConcurrencyRuleDialog(props: {
               <FormItem>
                 <FormLabel>{t('Model name')}</FormLabel>
                 <FormControl>
-                  <Input {...field} autoComplete='off' />
+                  <Input
+                    {...field}
+                    autoComplete='off'
+                    disabled={!!props.focusedUser && !!props.rule}
+                  />
                 </FormControl>
                 <FormDescription>
                   {t(
@@ -146,6 +187,7 @@ export function ConcurrencyRuleDialog(props: {
                 <FormControl>
                   <Switch
                     checked={field.value}
+                    disabled={!!props.focusedUser}
                     onCheckedChange={field.onChange}
                   />
                 </FormControl>
@@ -165,6 +207,7 @@ export function ConcurrencyRuleDialog(props: {
                       <Input
                         {...field}
                         type='number'
+                        disabled={!!props.focusedUser}
                         min={0}
                         max={1000000}
                         step={1}
@@ -189,7 +232,17 @@ export function ConcurrencyRuleDialog(props: {
               'Other users are users without an override. Their individual default limit and combined limit both apply.'
             )}
           </p>
-          <ConcurrencyUserOverrides />
+          <ConcurrencyUserOverrides focusedUser={props.focusedUser} />
+          {(form.formState.errors.user_limits?.message ||
+            form.formState.errors.user_limits?.root?.message) && (
+            <p role='alert' className='text-destructive text-sm'>
+              {t(
+                form.formState.errors.user_limits?.message ??
+                  form.formState.errors.user_limits?.root?.message ??
+                  ''
+              )}
+            </p>
+          )}
           <p className='text-muted-foreground text-sm'>
             {t(
               'Changes take effect only after Save Changes on the settings page.'

@@ -29,10 +29,13 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 
+import type { ConcurrencyFocusedUser } from './api'
 import type { ModelConcurrencyRuleValues } from './lib/schema'
 import { ConcurrencyUserSearch } from './user-search'
 
-export function ConcurrencyUserOverrides() {
+export function ConcurrencyUserOverrides(props: {
+  focusedUser?: ConcurrencyFocusedUser
+}) {
   const { t } = useTranslation()
   const form = useFormContext<ModelConcurrencyRuleValues>()
   const userFields = useFieldArray({
@@ -45,100 +48,121 @@ export function ConcurrencyUserOverrides() {
       <h4 className='text-sm font-semibold'>
         {t('User concurrency overrides')}
       </h4>
-      <ConcurrencyUserSearch
-        excludedUserIds={users.map((user) => user.user_id)}
-        disabled={users.length >= 1000}
-        onSelect={(userId) =>
-          userFields.append({ user_id: userId, max_concurrent: 0 })
-        }
-      />
-      <Button
-        type='button'
-        variant='outline'
-        disabled={users.length >= 1000}
-        onClick={() =>
-          userFields.append({ user_id: Number.NaN, max_concurrent: 0 })
-        }
-      >
-        {t('Add by user ID')}
-      </Button>
-      {userFields.fields.map((user, index) => (
-        <div
-          key={user.id}
-          className='grid grid-cols-2 items-start gap-2 rounded-lg border p-3 sm:grid-cols-[1fr_1fr_auto]'
-        >
-          <FormField
-            control={form.control}
-            name={`user_limits.${index}.user_id`}
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t('User ID')}</FormLabel>
-                <FormControl>
-                  <Input
-                    {...field}
-                    aria-label={t('User ID for override {{number}}', {
-                      number: index + 1,
-                    })}
-                    type='number'
-                    min={1}
-                    step={1}
-                    value={Number.isNaN(field.value) ? '' : field.value}
-                    onChange={(event) =>
-                      field.onChange(
-                        event.target.value === ''
-                          ? Number.NaN
-                          : Number(event.target.value)
-                      )
-                    }
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name={`user_limits.${index}.max_concurrent`}
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t('Maximum concurrency')}</FormLabel>
-                <FormControl>
-                  <Input
-                    {...field}
-                    aria-label={t('Concurrency for override {{number}}', {
-                      number: index + 1,
-                    })}
-                    type='number'
-                    min={0}
-                    max={1000000}
-                    step={1}
-                    value={Number.isNaN(field.value) ? '' : field.value}
-                    onChange={(event) =>
-                      field.onChange(
-                        event.target.value === ''
-                          ? Number.NaN
-                          : Number(event.target.value)
-                      )
-                    }
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
+      {!props.focusedUser && (
+        <>
+          <ConcurrencyUserSearch
+            excludedUserIds={users.map((user) => user.user_id)}
+            disabled={users.length >= 1000}
+            onSelect={(userId) =>
+              userFields.append({ user_id: userId, max_concurrent: 0 })
+            }
           />
           <Button
             type='button'
-            variant='ghost'
-            className='col-span-2 sm:col-span-1 sm:mt-6'
-            aria-label={t('Remove override {{number}}', {
-              number: index + 1,
-            })}
-            onClick={() => userFields.remove(index)}
+            variant='outline'
+            disabled={users.length >= 1000}
+            onClick={() =>
+              userFields.append({ user_id: Number.NaN, max_concurrent: 0 })
+            }
           >
-            {t('Remove')}
+            {t('Add by user ID')}
           </Button>
-        </div>
-      ))}
+        </>
+      )}
+      {userFields.fields.map((user, index) => {
+        if (props.focusedUser && user.user_id !== props.focusedUser.id) {
+          return null
+        }
+        return (
+          <div
+            key={user.id}
+            className={
+              props.focusedUser
+                ? 'rounded-lg border p-3'
+                : 'grid grid-cols-2 items-start gap-2 rounded-lg border p-3 sm:grid-cols-[1fr_1fr_auto]'
+            }
+          >
+            {!props.focusedUser && (
+              <FormField
+                control={form.control}
+                name={`user_limits.${index}.user_id`}
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('User ID')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        {...field}
+                        aria-label={t('User ID for override {{number}}', {
+                          number: index + 1,
+                        })}
+                        type='number'
+                        min={1}
+                        step={1}
+                        value={Number.isNaN(field.value) ? '' : field.value}
+                        onChange={(event) =>
+                          field.onChange(
+                            event.target.value === ''
+                              ? Number.NaN
+                              : Number(event.target.value)
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
+            <FormField
+              control={form.control}
+              name={`user_limits.${index}.max_concurrent`}
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Maximum concurrency')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      aria-label={
+                        props.focusedUser
+                          ? t('Maximum concurrency')
+                          : t('Concurrency for override {{number}}', {
+                              number: index + 1,
+                            })
+                      }
+                      type='number'
+                      min={0}
+                      max={1000000}
+                      step={1}
+                      value={Number.isNaN(field.value) ? '' : field.value}
+                      onChange={(event) =>
+                        field.onChange(
+                          event.target.value === ''
+                            ? Number.NaN
+                            : Number(event.target.value)
+                        )
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            {!props.focusedUser && (
+              <Button
+                type='button'
+                variant='ghost'
+                className='col-span-2 sm:col-span-1 sm:mt-6'
+                aria-label={t('Remove override {{number}}', {
+                  number: index + 1,
+                })}
+                onClick={() => userFields.remove(index)}
+              >
+                {t('Remove')}
+              </Button>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

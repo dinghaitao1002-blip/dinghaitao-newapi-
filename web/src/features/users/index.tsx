@@ -20,6 +20,7 @@ import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
 
+import { UserModelConcurrencyDialog } from './components/dialogs/user-model-concurrency-dialog'
 import { UsersDeleteDialog } from './components/users-delete-dialog'
 import { UsersMutateDrawer } from './components/users-mutate-drawer'
 import { UsersPrimaryButtons } from './components/users-primary-buttons'
@@ -48,6 +49,14 @@ function UsersContent() {
         currentRow={open === 'update' ? currentRow || undefined : undefined}
       />
       <UsersDeleteDialog />
+      {open === 'model-concurrency' && (
+        <UserModelConcurrencyDialog
+          user={currentRow}
+          onOpenChange={(isOpen) => {
+            if (!isOpen) setOpen(null)
+          }}
+        />
+      )}
     </>
   )
 }

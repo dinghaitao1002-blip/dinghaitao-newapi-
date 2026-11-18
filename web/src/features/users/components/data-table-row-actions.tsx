@@ -28,6 +28,7 @@ import {
   ShieldAlert,
   Link2,
   CreditCard,
+  Gauge,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -49,7 +50,9 @@ import {
 import type { AdminUserManageAction } from '@/features/auth/secure-verification'
 import { UserSubscriptionsDialog } from '@/features/subscriptions/components/dialogs/user-subscriptions-dialog'
 import { handleServerError } from '@/lib/handle-server-error'
+import { ROLE } from '@/lib/roles'
 import { AuthOperationError } from '@/lib/secure-verification'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { manageUser, resetUserPasskey, resetUserTwoFA } from '../api'
 import {
@@ -77,6 +80,9 @@ interface DataTableRowActionsProps {
 export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const { t } = useTranslation()
   const user = row.original
+  const canManageConcurrency = useAuthStore(
+    (state) => state.auth.user?.role === ROLE.SUPER_ADMIN
+  )
   const {
     setOpen,
     setCurrentRow,
@@ -107,7 +113,9 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         title: t(MANAGE_ACTION_TITLES[action]),
         description: t(
           'Confirm your identity before changing the account {{username}}.',
-          { username: user.username }
+          {
+            username: user.username,
+          }
         ),
       })
       if (!proof) return
@@ -134,7 +142,9 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         title: t('Verify to reset Passkey'),
         description: t(
           'Confirm your identity before changing the account {{username}}.',
-          { username: user.username }
+          {
+            username: user.username,
+          }
         ),
       })
       if (!proof) return
@@ -163,7 +173,9 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         title: t('Verify to reset 2FA'),
         description: t(
           'Confirm your identity before changing the account {{username}}.',
-          { username: user.username }
+          {
+            username: user.username,
+          }
         ),
       })
       if (!proof) return
@@ -247,6 +259,20 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
             {t('Promote')}
             <DropdownMenuShortcut>
               <ArrowUp size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
+        )}
+
+        {canManageConcurrency && (
+          <DropdownMenuItem
+            onClick={() => {
+              setCurrentRow(user)
+              setOpen('model-concurrency')
+            }}
+          >
+            {t('Model concurrency')}
+            <DropdownMenuShortcut>
+              <Gauge size={16} />
             </DropdownMenuShortcut>
           </DropdownMenuItem>
         )}

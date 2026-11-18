@@ -23,10 +23,15 @@ import { Switch } from '@/components/ui/switch'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
-import type { ModelConcurrencyRule, ModelConcurrencyUsage } from './api'
+import type {
+  ConcurrencyFocusedUser,
+  ModelConcurrencyRule,
+  ModelConcurrencyUsage,
+} from './api'
 
 export function ConcurrencyRuleCard(props: {
   rule: ModelConcurrencyRule
+  focusedUser?: ConcurrencyFocusedUser
   usage?: ModelConcurrencyUsage
   usageAvailable: boolean
   disabled: boolean
@@ -38,6 +43,18 @@ export function ConcurrencyRuleCard(props: {
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const limit = (value: number) =>
     value === 0 ? t('Unlimited') : formatNumber(value, locale)
+  const focusedOverride = props.rule.user_limits.find(
+    (user) => user.user_id === props.focusedUser?.id
+  )
+  const visibleUsers = props.focusedUser
+    ? [
+        {
+          user_id: props.focusedUser.id,
+          max_concurrent:
+            focusedOverride?.max_concurrent ?? props.rule.default_user_limit,
+        },
+      ]
+    : props.rule.user_limits
   return (
     <article
       className='space-y-4 rounded-xl border p-4'
@@ -52,7 +69,7 @@ export function ConcurrencyRuleCard(props: {
             model: props.rule.model,
           })}
           checked={props.rule.enabled}
-          disabled={props.disabled}
+          disabled={props.disabled || !!props.focusedUser}
           onCheckedChange={props.onToggle}
         />
         <Button
@@ -71,15 +88,35 @@ export function ConcurrencyRuleCard(props: {
           type='button'
           variant='ghost'
           size='sm'
-          disabled={props.disabled}
+          disabled={props.disabled || (!!props.focusedUser && !focusedOverride)}
           onClick={props.onDelete}
-          aria-label={t('Delete concurrency for {{model}}', {
-            model: props.rule.model,
-          })}
+          aria-label={
+            props.focusedUser
+              ? t('Restore default concurrency for {{model}}', {
+                  model: props.rule.model,
+                })
+              : t('Delete concurrency for {{model}}', {
+                  model: props.rule.model,
+                })
+          }
         >
-          {t('Delete')}
+          {props.focusedUser ? t('Restore default') : t('Delete')}
         </Button>
       </div>
+      {!props.rule.enabled && (
+        <p role='status' className='text-muted-foreground text-sm'>
+          {t(
+            'This model rule is disabled. Saved overrides do not take effect.'
+          )}
+        </p>
+      )}
+      {props.focusedUser && !focusedOverride && (
+        <p className='text-muted-foreground text-sm'>
+          {t('Using default per-user concurrency: {{limit}}', {
+            limit: limit(props.rule.default_user_limit),
+          })}
+        </p>
+      )}
       <dl className='grid gap-3 text-sm sm:grid-cols-3'>
         <div>
           <dt className='text-muted-foreground'>
@@ -111,7 +148,7 @@ export function ConcurrencyRuleCard(props: {
               : t('Unavailable'),
           })}
         </p>
-        {props.rule.user_limits.map((user) => (
+        {visibleUsers.map((user) => (
           <p key={user.user_id}>
             {t('User #{{id}}: limit {{limit}}; active {{current}}', {
               id: String(user.user_id),

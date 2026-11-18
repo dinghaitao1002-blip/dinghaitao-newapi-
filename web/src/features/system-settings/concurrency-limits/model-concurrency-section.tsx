@@ -36,43 +36,84 @@ import {
   getModelConcurrency,
   modelConcurrencyQueryKey,
   updateModelConcurrency,
+  type ConcurrencyFocusedUser,
   type ModelConcurrencyConfig,
+  type ModelConcurrencyData,
   type ModelConcurrencyRule,
 } from './api'
 import { ConcurrencyRuleCard } from './concurrency-rule-card'
 import { ConcurrencyRuleDialog } from './concurrency-rule-dialog'
+import {
+  mergeUserConcurrencyChanges,
+  UserConcurrencyConflict,
+} from './lib/merge-user-overrides'
 
-export function ModelConcurrencySection() {
+export function ModelConcurrencySection(props: {
+  focusedUser?: ConcurrencyFocusedUser
+}) {
   const { t } = useTranslation()
   const client = useQueryClient()
   const query = useQuery({
     queryKey: modelConcurrencyQueryKey,
-    queryFn: getModelConcurrency,
+    queryFn: () => getModelConcurrency(),
     refetchInterval: 5000,
   })
   const [draft, setDraft] = useState<ModelConcurrencyConfig | null>(null)
+  const [baseline, setBaseline] = useState<ModelConcurrencyConfig | null>(null)
   const [dialog, setDialog] = useState<{
     index: number
     rule: ModelConcurrencyRule | null
   } | null>(null)
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null)
   useEffect(() => {
-    if (query.data && draft === null) setDraft(query.data.config)
-  }, [query.data, draft])
+    if (!query.data || dialog || deleteIndex !== null) return
+    const hasUnsavedChanges =
+      draft !== null && JSON.stringify(draft) !== JSON.stringify(baseline)
+    if (!hasUnsavedChanges) {
+      setDraft(query.data.config)
+      setBaseline(query.data.config)
+    }
+  }, [query.data, draft, baseline, dialog, deleteIndex])
   const save = useMutation({
-    mutationFn: updateModelConcurrency,
+    mutationFn: async (config: ModelConcurrencyConfig) => {
+      if (!props.focusedUser || !baseline) return updateModelConcurrency(config)
+      const latest = await getModelConcurrency({ fresh: true })
+      client.setQueryData(modelConcurrencyQueryKey, latest)
+      try {
+        return await updateModelConcurrency(
+          mergeUserConcurrencyChanges(
+            baseline,
+            config,
+            latest.config,
+            props.focusedUser.id
+          )
+        )
+      } catch (error) {
+        if (error instanceof UserConcurrencyConflict) {
+          throw new Error(
+            t(
+              'Concurrency for {{model}} changed elsewhere. Reset to the latest settings and try again.',
+              { model: error.model }
+            )
+          )
+        }
+        throw error
+      }
+    },
     onMutate: () =>
       client.cancelQueries({ queryKey: modelConcurrencyQueryKey, exact: true }),
     onSuccess: (data) => {
-      client.setQueryData(modelConcurrencyQueryKey, {
-        ...query.data,
-        config: data.config,
-      })
+      client.setQueryData<ModelConcurrencyData>(
+        modelConcurrencyQueryKey,
+        (previous) =>
+          previous ? { ...previous, config: data.config } : undefined
+      )
       void client.invalidateQueries({
         queryKey: modelConcurrencyQueryKey,
         exact: true,
       })
       setDraft(data.config)
+      setBaseline(data.config)
       toast.success(t('Concurrency limits saved'))
     },
     onError: (error) => handleServerError(error),
@@ -88,16 +129,31 @@ export function ModelConcurrencySection() {
     }
     return <LoadingState />
   }
-  const dirty = JSON.stringify(draft) !== JSON.stringify(query.data.config)
+  const dirty = JSON.stringify(draft) !== JSON.stringify(baseline)
   return (
     <SettingsSection title={t('Concurrency Limits')}>
       <SettingsPageFormActions
         onSave={() => save.mutate(draft)}
-        onReset={() => setDraft(query.data.config)}
+        onReset={() => {
+          setDraft(query.data.config)
+          setBaseline(query.data.config)
+          save.reset()
+        }}
         isSaving={save.isPending}
         isSaveDisabled={!dirty}
         isResetDisabled={!dirty}
       />
+      {props.focusedUser && (
+        <p className='rounded-lg border p-3 text-sm break-words'>
+          {t(
+            'Concurrency settings for {{username}} (#{{id}}). Shared limits and other users are preserved.',
+            {
+              username: props.focusedUser.username,
+              id: String(props.focusedUser.id),
+            }
+          )}
+        </p>
+      )}
       <p className='text-muted-foreground text-sm'>
         {t(
           'Limit active requests by model and user. Requests above a limit return 429 without waiting.'
@@ -112,10 +168,17 @@ export function ModelConcurrencySection() {
         controlId='enable-model-concurrency'
         label={t('Enable model concurrency limits')}
         checked={draft.enabled}
-        disabled={save.isPending}
+        disabled={save.isPending || !!props.focusedUser}
         onCheckedChange={(enabled) => setDraft({ ...draft, enabled })}
         className='rounded-xl border p-4'
       />
+      {!draft.enabled && (
+        <p role='status' className='text-muted-foreground text-sm'>
+          {t(
+            'Model concurrency limits are disabled. Saved overrides do not take effect.'
+          )}
+        </p>
+      )}
       <p className='text-muted-foreground text-sm'>
         {query.data.storage === 'redis'
           ? t('Redis counters are shared across server instances.')
@@ -154,20 +217,33 @@ export function ModelConcurrencySection() {
       )}
       <div className='flex items-center justify-between gap-3'>
         <h4 className='font-semibold'>{t('Model concurrency rules')}</h4>
-        <Button
-          type='button'
-          disabled={save.isPending || draft.rules.length >= 1000}
-          onClick={() => setDialog({ index: -1, rule: null })}
-        >
-          {t('Add model rule')}
-        </Button>
+        {!props.focusedUser && (
+          <Button
+            type='button'
+            disabled={save.isPending || draft.rules.length >= 1000}
+            onClick={() => setDialog({ index: -1, rule: null })}
+          >
+            {t('Add model rule')}
+          </Button>
+        )}
       </div>
+      {props.focusedUser && draft.rules.length > 0 && (
+        <p className='text-muted-foreground text-sm'>
+          {t(
+            'Add shared model rules from Model concurrency at the top of Users.'
+          )}
+        </p>
+      )}
       {draft.rules.length === 0 && (
         <EmptyState
           title={t('No model concurrency rules')}
-          description={t(
-            'Add a model rule to configure shared and per-user limits.'
-          )}
+          description={
+            props.focusedUser
+              ? t(
+                  'Add shared model rules from Model concurrency at the top of Users.'
+                )
+              : t('Add a model rule to configure shared and per-user limits.')
+          }
           bordered
         />
       )}
@@ -175,6 +251,7 @@ export function ModelConcurrencySection() {
         <ConcurrencyRuleCard
           key={rule.model}
           rule={rule}
+          focusedUser={props.focusedUser}
           usageAvailable={query.data.usage_available && !query.isError}
           usage={query.data.usage.find((usage) => usage.model === rule.model)}
           disabled={save.isPending}
@@ -194,6 +271,7 @@ export function ModelConcurrencySection() {
         open={dialog !== null}
         rule={dialog?.rule ?? null}
         models={draft.rules.map((rule) => rule.model)}
+        focusedUser={props.focusedUser}
         onOpenChange={(open) => {
           if (!open) setDialog(null)
         }}
@@ -210,17 +288,44 @@ export function ModelConcurrencySection() {
         onOpenChange={(open) => {
           if (!open) setDeleteIndex(null)
         }}
-        title={t('Delete model concurrency rule?')}
-        desc={t(
-          'This removes the rule from the draft. Save Changes to apply the removal.'
-        )}
-        destructive
-        confirmText={t('Delete')}
+        title={
+          props.focusedUser
+            ? t('Restore default concurrency for this user?')
+            : t('Delete model concurrency rule?')
+        }
+        desc={
+          props.focusedUser
+            ? t(
+                'Only this user override will be removed. The model rule and other users are preserved. Save Changes to apply.'
+              )
+            : t(
+                'This removes the rule from the draft. Save Changes to apply the removal.'
+              )
+        }
+        destructive={!props.focusedUser}
+        confirmText={props.focusedUser ? t('Restore default') : t('Delete')}
         handleConfirm={() => {
-          setDraft({
-            ...draft,
-            rules: draft.rules.filter((_, index) => index !== deleteIndex),
-          })
+          if (props.focusedUser) {
+            const userId = props.focusedUser.id
+            setDraft({
+              ...draft,
+              rules: draft.rules.map((rule, index) =>
+                index === deleteIndex
+                  ? {
+                      ...rule,
+                      user_limits: rule.user_limits.filter(
+                        (user) => user.user_id !== userId
+                      ),
+                    }
+                  : rule
+              ),
+            })
+          } else {
+            setDraft({
+              ...draft,
+              rules: draft.rules.filter((_, index) => index !== deleteIndex),
+            })
+          }
           setDeleteIndex(null)
         }}
       />

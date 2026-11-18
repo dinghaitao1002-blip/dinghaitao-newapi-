@@ -19,6 +19,8 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
+export type ConcurrencyFocusedUser = { id: number; username: string }
+
 export type ModelConcurrencyUserLimit = {
   user_id: number
   max_concurrent: number
@@ -56,10 +58,15 @@ type Response<T> = {
 
 export const modelConcurrencyQueryKey = ['model-concurrency'] as const
 
-export async function getModelConcurrency(): Promise<ModelConcurrencyData> {
-  const response = await api.get<Response<ModelConcurrencyData>>(
-    '/api/option/model_concurrency'
-  )
+export async function getModelConcurrency(options?: {
+  fresh?: boolean
+}): Promise<ModelConcurrencyData> {
+  const endpoint = '/api/option/model_concurrency'
+  const response = options?.fresh
+    ? await api.get<Response<ModelConcurrencyData>>(endpoint, {
+        disableDuplicate: true,
+      })
+    : await api.get<Response<ModelConcurrencyData>>(endpoint)
   return requireServerSuccess(response.data).data
 }
 

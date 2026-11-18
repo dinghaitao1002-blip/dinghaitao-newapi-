@@ -185,6 +185,25 @@ describe('model concurrency settings', () => {
     )
   })
 
+  it('refreshes changed server settings when there are no unsaved edits', async () => {
+    render(<SettingsFixture />)
+    const toggle = await screen.findByRole('switch', {
+      name: 'Enable model concurrency limits',
+    })
+    expect(toggle).toBeChecked()
+    serverData.config.enabled = false
+    serverData.config.rules[0].max_concurrent = 22
+    await act(async () => {
+      await queryClient.invalidateQueries({
+        queryKey: modelConcurrencyQueryKey,
+        exact: true,
+      })
+    })
+    await waitFor(() => expect(toggle).not.toBeChecked())
+    expect(screen.getByText('22')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Save Changes' })).toBeDisabled()
+  })
+
   it('edits limits and user overrides, and preserves the draft during a usage refresh', async () => {
     render(<SettingsFixture />)
     await userEvent.click(
