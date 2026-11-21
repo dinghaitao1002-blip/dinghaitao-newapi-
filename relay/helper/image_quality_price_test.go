@@ -322,3 +322,37 @@ func TestImageQualityPricingPriorityAndFallback(t *testing.T) {
 		require.Contains(t, err.Error(), "model image quality price not configured")
 	})
 }
+
+func TestUserImageQualityPrivatePriceAcceptsMaxAsHigh(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldDB := model.DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	pool, err := db.DB()
+	require.NoError(t, err)
+	pool.SetMaxOpenConns(1)
+	model.DB = db
+	t.Cleanup(func() {
+		model.DB = oldDB
+		_ = pool.Close()
+	})
+	require.NoError(t, db.AutoMigrate(&model.UserModelPrice{}, &model.ModelImageQualityPrice{}, &model.UserModelImageQualityPrice{}))
+
+	const modelName = "gpt-image-2.5-sunburst"
+	const userID = 4343
+	items := fullImageQualityPriceMatrix(0.1)
+	for i := range items {
+		if items[i].Quality == model.ImageQualityHigh && items[i].Resolution == model.ImageResolution2K {
+			items[i].Price = 0.3
+		}
+	}
+	require.NoError(t, model.SaveUserModelImageQualityPrices(userID, modelName, items, true))
+
+	ctx, info, meta := newImageQualityPriceTestContext(modelName, userID, "max", "2k", 1)
+	price, ok, err := resolveImageQualityPricing(ctx, info, meta)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, 0.3, price)
+	require.Equal(t, model.ImageQualityHigh, info.ImageQuality)
+	require.Equal(t, "user_image_quality_private", info.ImageQualityPriceSource)
+}
