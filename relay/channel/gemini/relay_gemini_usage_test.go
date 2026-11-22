@@ -815,3 +815,79 @@ func TestGeminiTextGenerationHandlerRejectsBlockedResponseWithoutOutput(t *testi
 		})
 	}
 }
+
+func TestGeminiChatAndStreamHandlersRejectBlockedResponsesWithoutOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldStreamingTimeout
+	})
+
+	reason := "PROHIBITED_CONTENT"
+	finishBlocked := dto.GeminiChatResponse{
+		Candidates:    []dto.GeminiChatCandidate{{Content: dto.GeminiChatContent{Role: "model"}, FinishReason: &reason}},
+		UsageMetadata: dto.GeminiUsageMetadata{PromptTokenCount: 481, TotalTokenCount: 481},
+	}
+	promptBlocked := dto.GeminiChatResponse{PromptFeedback: &dto.GeminiChatPromptFeedback{BlockReason: &reason}}
+	withOutput := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{Content: dto.GeminiChatContent{Role: "model", Parts: []dto.GeminiPart{{Text: "partial"}}}}},
+	}
+	type handler func(*gin.Context, *relaycommon.RelayInfo, *http.Response) (*dto.Usage, *types.NewAPIError)
+	cases := []struct {
+		name        string
+		handler     handler
+		stream      bool
+		frames      []dto.GeminiChatResponse
+		wantBlocked bool
+	}{
+		{name: "chat blocked finish reason", handler: GeminiChatHandler, frames: []dto.GeminiChatResponse{finishBlocked}, wantBlocked: true},
+		{name: "chat blocked prompt", handler: GeminiChatHandler, frames: []dto.GeminiChatResponse{promptBlocked}, wantBlocked: true},
+		{name: "chat stream blocked finish reason", handler: GeminiChatStreamHandler, stream: true, frames: []dto.GeminiChatResponse{finishBlocked}, wantBlocked: true},
+		{name: "chat stream blocked prompt", handler: GeminiChatStreamHandler, stream: true, frames: []dto.GeminiChatResponse{promptBlocked}, wantBlocked: true},
+		{name: "responses blocked finish reason", handler: GeminiResponsesHandler, frames: []dto.GeminiChatResponse{finishBlocked}, wantBlocked: true},
+		{name: "responses stream blocked finish reason", handler: GeminiResponsesStreamHandler, stream: true, frames: []dto.GeminiChatResponse{finishBlocked}, wantBlocked: true},
+		{name: "native stream blocked finish reason", handler: GeminiTextGenerationStreamHandler, stream: true, frames: []dto.GeminiChatResponse{finishBlocked}, wantBlocked: true},
+		{name: "native stream blocked prompt", handler: GeminiTextGenerationStreamHandler, stream: true, frames: []dto.GeminiChatResponse{promptBlocked}, wantBlocked: true},
+		{name: "native stream blocked after output", handler: GeminiTextGenerationStreamHandler, stream: true, frames: []dto.GeminiChatResponse{withOutput, finishBlocked}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			info := &relaycommon.RelayInfo{
+				RelayFormat:     types.RelayFormatOpenAI,
+				OriginModelName: "gemini-3-pro-image-preview",
+				ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3-pro-image"},
+			}
+			var body bytes.Buffer
+			for _, frame := range tc.frames {
+				data, err := common.Marshal(frame)
+				require.NoError(t, err)
+				if tc.stream {
+					body.WriteString("data: ")
+				}
+				body.Write(data)
+				body.WriteString("\n")
+			}
+			if tc.stream {
+				body.WriteString("data: [DONE]\n")
+			}
+
+			_, newAPIError := tc.handler(c, info, &http.Response{Body: io.NopCloser(&body)})
+
+			if !tc.wantBlocked {
+				require.Nil(t, newAPIError)
+				assert.Contains(t, recorder.Body.String(), "partial")
+				return
+			}
+			require.NotNil(t, newAPIError)
+			assert.Equal(t, http.StatusBadRequest, newAPIError.StatusCode)
+			assert.Equal(t, types.ErrorCodePromptBlocked, newAPIError.GetErrorCode())
+			assert.Contains(t, newAPIError.Error(), reason)
+			assert.True(t, info.PerformanceBusinessRejection)
+			assert.Empty(t, recorder.Body.String())
+		})
+	}
+}
