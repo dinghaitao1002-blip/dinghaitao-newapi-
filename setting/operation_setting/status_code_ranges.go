@@ -36,6 +36,9 @@ var alwaysSkipRetryStatusCodes = map[int]struct{}{
 
 var alwaysSkipRetryCodes = map[types.ErrorCode]struct{}{
 	types.ErrorCodeBadResponseBody: {},
+	// The upstream may still finish the accepted image job. Replaying the
+	// entire generation request can create another job and multiply the wait.
+	"image_poll_timeout": {},
 }
 
 func AutomaticDisableStatusCodesToString() string {

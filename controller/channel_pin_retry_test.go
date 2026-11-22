@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -74,6 +75,58 @@ func TestShouldRetryTaskRelayHonorsPinRetryMode(t *testing.T) {
 		RetryMode: dto.PinRetrySingleAttempt,
 	})
 	assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decideTaskRetry(token, taskErr, 1))
+}
+
+func TestImagePollTimeoutDoesNotReplayGeneration(t *testing.T) {
+	previousRanges := operation_setting.AutomaticRetryStatusCodeRanges
+	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: 400, End: 599}}
+	t.Cleanup(func() { operation_setting.AutomaticRetryStatusCodeRanges = previousRanges })
+	for _, tc := range []struct {
+		name, code, message, mode, mapping string
+		showBody, wrapped, wantRetry       bool
+	}{
+		{name: "sync", code: "image_poll_timeout", message: "Image generation timed out. Please try again."},
+		{name: "stream before output", code: "image_poll_timeout", message: "Image generation timed out.", mode: "stream"},
+		{name: "async", code: "image_poll_timeout", message: "Image generation timed out.", mode: "async"},
+		{name: "wrapped detailed response", code: "image_poll_timeout", message: "Image generation timed out.", showBody: true, wrapped: true},
+		{name: "status mapping", code: "image_poll_timeout", message: "Image generation timed out.", mapping: `{"502":503}`},
+		{name: "ordinary gateway failure", code: "upstream_error", message: "Gateway failure.", wantRetry: true},
+		{name: "timeout message without structured code", code: "upstream_error", message: "Image generation timed out. Please try again.", wantRetry: true},
+		{name: "code mentioned in message only", code: "upstream_error", message: "image_poll_timeout", wantRetry: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newPinRetryContext()
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", nil)
+			if tc.mode == "async" {
+				c.Set(service.ImageAsyncTaskIDContextKey, "imgtask_test")
+			} else if tc.mode == "stream" {
+				common.SetContextKey(c, constant.ContextKeyIsStream, true)
+			}
+			body, err := common.Marshal(gin.H{"error": types.OpenAIError{Code: tc.code, Message: tc.message, Type: "server_error"}})
+			require.NoError(t, err)
+			apiErr := service.RelayErrorHandler(c.Request.Context(), &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(string(body)))}, tc.showBody)
+			require.NotNil(t, apiErr)
+			if tc.wrapped {
+				apiErr = types.NewError(fmt.Errorf("image request failed: %w", apiErr), types.ErrorCodeDoRequestFailed)
+			}
+			service.ResetStatusCode(apiErr, tc.mapping)
+			status, message := apiErr.StatusCode, apiErr.Error()
+			decision := service.DecideRelayRetry(c, apiErr, 2)
+			assert.Equal(t, tc.wantRetry, decision.Action == "retry")
+			assert.Equal(t, status, apiErr.StatusCode)
+			assert.Equal(t, message, apiErr.Error())
+			assert.Equal(t, types.ErrorCode(tc.code), apiErr.GetErrorCode())
+			taskErr := &dto.TaskError{Code: tc.code, Message: tc.message, StatusCode: status}
+			taskDecision := decideTaskRetry(newPinRetryContext(), taskErr, 2)
+			assert.Equal(t, tc.wantRetry, taskDecision.Action == "retry")
+			if !tc.wantRetry {
+				assert.Equal(t, "system_retry_exclusion", decision.Reason)
+				assert.Equal(t, "system_retry_exclusion", taskDecision.Reason)
+			}
+		})
+	}
+	accepted := &dto.TaskError{Code: "image_poll_timeout", StatusCode: http.StatusBadGateway, NoRetry: true}
+	assert.Equal(t, "task_accepted", decideTaskRetry(newPinRetryContext(), accepted, 2).Reason)
 }
 
 func TestSameChannelPinsMergeToStricterRetryMode(t *testing.T) {
