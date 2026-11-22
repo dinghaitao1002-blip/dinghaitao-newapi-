@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "module": "github.com/keyirobot/chatgpt2api-go",
+    "source_archive": "c2a-go-src.tgz.0.1.16",
+    "source_archive_sha256": "ab78a12ed8331d37d2f5b003aa7c15b29f0451bad28a9e4e27cd83108fc77436",
+    "base_version": "0.1.16"
+  },
+  "patch": {
+    "file": "image-timeout-20261122.patch",
+    "sha256": "800a6247a9353e1d8f3fb4d8e3bfa571ac599d054c87c114852d4232d7cf70c5",
+    "baseline_files": {
+      "internal/upstream/classify.go": "f3d04554f57d42f344f1883c849bed43ed962e781de8d0e8a2860d2ada26414c",
+      "internal/upstream/state.go": "47c790b483e634ec3c7d9dac07487ef8e637811ebb73b3c211d5a7b44777c3a6",
+      "internal/upstream/image.go": "2edc9452a0555b5a71be44fd17c331aeaa6b842aaf2c906548127cbe0cd5bf0b",
+      "internal/upstream/generate_test.go": "cf1bf9455e1c359a96e744d53bc496ba4d315b8236b6933a03eab03bdf5ef274"
+    },
+    "result_files": {
+      "internal/upstream/classify.go": "e408c3b9360b9fa50e0664f043624fdfd392ff824cb3d2062248f396c2c70739",
+      "internal/upstream/state.go": "e505c55f6908314a4f8d7532039b334d01be6f2f41b80f78c9cd1a69e8cf0498",
+      "internal/upstream/image.go": "7b06ede9be3f29f54a64da06c997f02ed0289332b6bf394725e346ed47f32d43",
+      "internal/upstream/generate_test.go": "29a7290505fa61a309f47bcc3f8a79eeb4fcbc55c508eb7e7461f40a122262a0"
+    }
+  },
+  "runtime": {
+    "version": "0.1.16-h2test-image-timeout-20261122",
+    "go_version": "go1.27.4",
+    "cgo_enabled": false,
+    "platform": "linux/amd64/v1",
+    "binary_sha256": "098cbfd50c2b821fd2b5a849678b04fd5f5f45033eb7872fb5834b3430146eb9",
+    "runtime_base_image": "chatgpt2api-go:0.1.16-h2test",
+    "runtime_base_image_id": "sha256:67c7757401fb561e18c9208cbc4efe66e164d7f643891725c5138904ab9b0f46"
+  },
+  "behavior": [
+    "Keep confirmed structured input-size rejections and immediately return HTTP413 without image polling",
+    "Recognize explicit assistant code calls to python/python.exec even before end_turn; use existing3x slow polling budget",
+    "Preserve ordinary image polling, terminal markers, model mappings and output selection",
+    "Record bounded stream-end metadata without payload or credential text"
+  ],
+  "validation": {
+    "command": "GOWORK=off GOPROXY=off CGO_ENABLED=0 go test -p4 ./internal/upstream ./internal/engine",
+    "network": "none",
+    "result": "passed",
+    "unmodified_source_and_asset_files": 642,
+    "embedded_assets_unchanged": 21,
+    "runtime_dependencies_matching_base": 29,
+    "go_mod_and_sum_unchanged": true
+  },
+  "newapi_retry_guard_commit": "7affd0312bba3a512159de806e0258e7a47b0801"
+}

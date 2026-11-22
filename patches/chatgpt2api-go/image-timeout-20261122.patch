@@ -1,0 +1,650 @@
+--- a/internal/upstream/classify.go
++++ b/internal/upstream/classify.go
+@@ -446,6 +446,9 @@
+ 				if s, ok := messageID.(string); ok && pyStrip(s) != "" {
+ 					facts["message_id"] = pyStrip(s)
+ 				}
++				if x.has("recipient") {
++					facts["recipient"] = lowerStr(x.get("recipient"))
++				}
+ 			}
+ 			if !isBlank(author.get("role")) {
+ 				facts["role"] = lowerStr(author.get("role"))
+@@ -502,6 +505,11 @@
+ 				recordContent(patchObj)
+ 			case hasSuffix("/message/author/role") && isStr:
+ 				facts["role"] = pyLower(pyStrip(patchStr))
++			case hasSuffix("/message/recipient"):
++				facts["recipient"] = ""
++				if isStr {
++					facts["recipient"] = pyLower(pyStrip(patchStr))
++				}
+ 			case hasSuffix("/message/id", "/message/message_id") && isStr:
+ 				facts["message_id"] = pyStrip(patchStr)
+ 			case hasSuffix("/message/content/content_type") && isStr:
+--- a/internal/upstream/state.go
++++ b/internal/upstream/state.go
+@@ -262,6 +262,15 @@
+ 	if v := asObj(event.get("v")).get("conversation_id"); truthy(v) {
+ 		s.conversationID = pyRepr(v)
+ 	}
++	// A request-size rejection can arrive before any assistant/tool message.
++	// Do not let the role filter below discard that explicit error envelope.
++	// Keep only the fixed public explanation, never the event or prompt text.
++	if hasInputSizeError(event) {
++		failure := newFailure(CodeRequestTooLarge, nil, publicRequestTooLargeText)
++		failure.PublicDetail = publicRequestTooLargeText
++		s.failure = mergeFailure(s.failure, &failure)
++		return
++	}
+ 	eventType, _ := event.get("type").(string)
+ 	if eventType == "moderation" && isTrue(asObj(event.get("moderation_response")).get("blocked")) {
+ 		s.blocked = true
+@@ -293,6 +302,12 @@
+ 	currentRole := s.fact("role")
+ 	messageID := pyStrip(pyStr(facts["message_id"]))
+ 	currentMessageID := pyStrip(pyStr(s.facts["message_id"]))
++	// Recipient belongs to one message, including when its id/role arrives
++	// in a separate patch or the next message is an ignored user echo.
++	if (role != "" && role != currentRole) ||
++		(messageID != "" && currentMessageID != "" && messageID != currentMessageID) {
++		delete(s.facts, "recipient")
++	}
+ 	shouldUpdate := false
+ 	if role == "assistant" || role == "tool" {
+ 		if (currentRole != "" && currentRole != role) ||
+@@ -327,9 +342,11 @@
+ 	endTurn, hasEndTurn := s.facts["end_turn"].(bool)
+ 	isTerminal := (hasEndTurn && endTurn) || (!hasEndTurn && isTerminalStatus(currentStatus))
+ 	isImageArguments := isTerminal && isImageGenerationArguments(messageText, currentRole, currentContentType)
+-	// A python call is a finished assistant "code" message that is not the
+-	// image tool's arguments, or the tool's "execution_output" that follows.
+-	if (currentRole == "tool" && currentContentType == "execution_output") ||
++	// Explicit Python calls need the existing slow budget even while the
++	// assistant's end_turn is false; the tool result may arrive after SSE ends.
++	pythonCall := currentRole == "assistant" && currentContentType == "code" &&
++		(s.fact("recipient") == "python" || s.fact("recipient") == "python.exec")
++	if pythonCall || (currentRole == "tool" && currentContentType == "execution_output") ||
+ 		(isTerminal && currentRole == "assistant" && currentContentType == "code" &&
+ 			pyStrip(messageText) != "" && !isImageArguments) {
+ 		s.codeToolUsed = true
+--- a/internal/upstream/image.go
++++ b/internal/upstream/image.go
+@@ -7,6 +7,7 @@
+ 	"errors"
+ 	"fmt"
+ 	"io"
++	"sort"
+ 	"strings"
+ 	"time"
+ 
+@@ -452,6 +453,21 @@
+ // "[DONE]", a terminal payload, end of stream or the stream deadline.
+ func (g *generation) runConversation(ctx context.Context, reqs requirements, conduitToken string) error {
+ 	c := g.c
++	diagnostics := imageStreamDiagnostics{
++		reason: "read_error", contentType: "missing", eventType: "unknown", role: "unknown",
++		status: "unknown", endTurn: "unknown", recipient: "unknown", payloadRole: "unknown",
++	}
++	defer func() {
++		c.log.Info("image_stream_end", "conversation_id", imageStreamConversationID(g.state.conversationID),
++			"reason", diagnostics.reason, "http_status", diagnostics.httpStatus, "content_type", diagnostics.contentType,
++			"sse_event_count", g.timing.SSEEvents, "sse_stream_ms", g.timing.SSEStream.Milliseconds(),
++			"assistant_role_events", diagnostics.assistantEvents, "tool_role_events", diagnostics.toolEvents,
++			"last_event_type", diagnostics.eventType, "last_role", diagnostics.role, "last_status", diagnostics.status,
++			"last_end_turn", diagnostics.endTurn, "last_recipient", diagnostics.recipient,
++			"last_payload_role", diagnostics.payloadRole, "last_payload_completion_marker", diagnostics.completionMarker,
++			"structured_error_seen", diagnostics.errorSeen, "failure_codes", diagnostics.failureCodes,
++			"has_generated_image_id", len(g.notReferences(g.state.fileIDs))+len(g.notReferences(g.state.sedimentIDs)) > 0)
++	}()
+ 	const path = "/backend-api/f/conversation"
+ 	payload := c.conversationBody(g.prompt, g.req.Model, g.refs)
+ 	headers := c.imageHeaders(path, reqs, conduitToken, "text/event-stream")
+@@ -464,6 +480,7 @@
+ 		transportLimit = scaled
+ 	}
+ 	if err := ctx.Err(); err != nil {
++		diagnostics.contextEnd(err)
+ 		return contextError(err)
+ 	}
+ 	sctx, cancel := context.WithCancelCause(ctx)
+@@ -473,12 +490,15 @@
+ 
+ 	streamErr := func(err error) error {
+ 		if perr := ctx.Err(); perr != nil {
++			diagnostics.contextEnd(perr)
+ 			return contextError(perr)
+ 		}
+ 		switch context.Cause(sctx) {
+ 		case errStreamDeadline:
++			diagnostics.reason = "deadline"
+ 			return &streamTimeoutError{limit: limit}
+ 		case errTransportDeadline:
++			diagnostics.reason = "deadline"
+ 			return &netError{err: fmt.Errorf("%w: conversation request exceeded %s", transport.ErrTimeout, formatTimeoutSecs(transportLimit.Seconds())), timeout: true}
+ 		}
+ 		return netErr(ctx, err)
+@@ -490,11 +510,19 @@
+ 	}
+ 	defer response.Body.Close()
+ 	g.timing.StreamStatus = response.Status
++	diagnostics.httpStatus = response.Status
++	diagnostics.contentType = imageStreamEnum(strings.SplitN(response.Header.Get("Content-Type"), ";", 2)[0],
++		"text/event-stream", "application/json", "text/html", "text/plain", "application/octet-stream")
++	if response.Header.Get("Content-Type") == "" {
++		diagnostics.contentType = "missing"
++	}
+ 	if response.Status < 200 || response.Status >= 300 {
++		diagnostics.reason = "http_status"
+ 		// The error body is read (bounded) from the stream so that the error
+ 		// carries upstream's JSON, e.g. a 404 {"detail": "Model not found"}.
+ 		body := readCapped(response.Body, streamErrorBodyLimit)
+ 		if perr := ctx.Err(); perr != nil {
++			diagnostics.contextEnd(perr)
+ 			return contextError(perr)
+ 		}
+ 		return newHTTPError(path, response.Status, body, response.Header.Get("Retry-After"), scopeAccount)
+@@ -516,6 +544,7 @@
+ 		data, err := reader.next()
+ 		if err != nil {
+ 			if errors.Is(err, io.EOF) && context.Cause(sctx) == nil {
++				diagnostics.reason = "eof"
+ 				return nil
+ 			}
+ 			return streamErr(err)
+@@ -532,8 +561,14 @@
+ 		}
+ 		lastEvent = now
+ 		g.timing.SSEEvents++
++		diagnostics.observe(data)
+ 		event := g.state.feedEvent(data)
++		if failure := g.state.failure; failure != nil && failure.Code == CodeRequestTooLarge {
++			diagnostics.reason = "input_too_large"
++			return g.failure(*failure, publicRequestTooLargeText, g.state.conversationID)
++		}
+ 		if event.kind == eventDone {
++			diagnostics.reason = "done"
+ 			return nil
+ 		}
+ 		if g.emit != nil {
+@@ -548,10 +583,131 @@
+ 			// ChatGPT sometimes finishes the assistant turn and then keeps
+ 			// the connection open without sending the image ids; leave the
+ 			// SSE phase and poll instead of waiting out the deadline.
+-			c.log.Info("image_stream_terminal_break", "payload_preview", excerpt(data, 1000))
++			diagnostics.reason = "terminal"
+ 			return nil
+ 		}
+ 	}
++}
++
++// imageStreamDiagnostics never participates in generation decisions. Its
++// strings are closed enums: no payload, prompt, error detail or header values
++// other than a recognized media type are written to the diagnostic log.
++type imageStreamDiagnostics struct {
++	reason, contentType               string
++	httpStatus                        int
++	assistantEvents, toolEvents       int
++	eventType, role, status, endTurn  string
++	recipient, payloadRole, messageID string
++	completionMarker, errorSeen       bool
++	failureCodes                      []string
++}
++
++func imageStreamEnum(value string, allowed ...string) string {
++	value = pyLower(pyStrip(value))
++	for _, candidate := range allowed {
++		if value == candidate {
++			return candidate
++		}
++	}
++	return "unknown"
++}
++
++func imageStreamConversationID(value string) string {
++	// Conversation ids are UUIDs; an unexpected upstream value must not turn
++	// this correlation field into a channel for payload or credential text.
++	if len(value) != 36 {
++		return "unknown"
++	}
++	for i, ch := range value {
++		if i == 8 || i == 13 || i == 18 || i == 23 {
++			if ch != '-' {
++				return "unknown"
++			}
++		} else if !strings.ContainsRune("0123456789abcdefABCDEF", ch) {
++			return "unknown"
++		}
++	}
++	return value
++}
++
++func (d *imageStreamDiagnostics) contextEnd(err error) {
++	d.reason = "cancelled"
++	if errors.Is(err, context.DeadlineExceeded) {
++		d.reason = "deadline"
++	}
++}
++
++func (d *imageStreamDiagnostics) observe(payload string) {
++	if payload == "[DONE]" {
++		return // keep the metadata of the event preceding the done marker
++	}
++	value, err := decodeJSON([]byte(payload))
++	if err != nil {
++		d.eventType, d.payloadRole, d.completionMarker = "non_json", "unknown", false
++		return
++	}
++	facts := extractMessageFacts(value)
++	role := imageStreamEnum(pyStr(facts["role"]), "assistant", "tool", "user", "system", "developer")
++	d.payloadRole = role
++	if role != "unknown" {
++		messageID := pyStr(facts["message_id"])
++		if role != d.role || (messageID != "" && messageID != d.messageID) {
++			d.status, d.endTurn, d.recipient = "unknown", "unknown", "unknown"
++		}
++		d.role, d.messageID = role, messageID
++		if role == "assistant" {
++			d.assistantEvents++
++		} else if role == "tool" {
++			d.toolEvents++
++		}
++	}
++	if status, ok := facts["status"].(string); ok {
++		d.status = imageStreamEnum(status, "in_progress", "pending", "queued", "running", "waiting",
++			"complete", "completed", "done", "finished", "finished_successfully", "finished_partial_completion",
++			"success", "succeeded", "failed", "error", "cancelled", "canceled", "incomplete")
++	}
++	if endTurn, ok := facts["end_turn"].(bool); ok {
++		d.endTurn = "false"
++		if endTurn {
++			d.endTurn = "true"
++		}
++	}
++	d.eventType = imageStreamEnum(pyStr(asObj(value).get("type")), "stop", "message", "message_delta", "message_stream_complete",
++		"server_ste_metadata", "moderation", "error", "response.failed", "response.incomplete", "response.completed",
++		"conversation_detail_metadata", "resume_conversation_token", "conversation_id", "conversation.delta")
++	d.completionMarker = hasCompletionMarker(value)
++	// Recipient is not a generation-state fact. Read only that field from a
++	// full message or its patches, without retaining any content strings.
++	var visit func(any)
++	visit = func(v any) {
++		switch x := v.(type) {
++		case *object:
++			if message := eventMessage(x); message.has("recipient") {
++				d.recipient = imageStreamEnum(pyStr(message.get("recipient")), "all", "image_gen", "image_gen.text2im", "python", "python.exec", "browser", "web")
++			}
++			if strings.HasSuffix(lowerStr(x.get("p")), "/message/recipient") {
++				d.recipient = imageStreamEnum(pyStr(x.get("v")), "all", "image_gen", "image_gen.text2im", "python", "python.exec", "browser", "web")
++			}
++			if child := x.get("v"); isContainer(child) {
++				visit(child)
++			}
++		case []any:
++			for _, item := range x {
++				visit(item)
++			}
++		}
++	}
++	visit(value)
++	d.errorSeen = d.errorSeen || isTrue(facts["is_error"]) || d.eventType == "error" ||
++		d.eventType == "response.failed" || d.eventType == "response.incomplete"
++	codes, _ := facts["codes"].(map[string]bool)
++	for code := range codes {
++		if code = normalizeCode(code); failurePolicies[code].status != 0 {
++			d.failureCodes = addUnique(d.failureCodes, code)
++			d.errorSeen = true
++		}
++	}
++	sort.Strings(d.failureCodes)
+ }
+ 
+ // sseReader yields the payloads of "data:" lines (helper.iter_sse_payloads).
+--- a/internal/upstream/generate_test.go
++++ b/internal/upstream/generate_test.go
+@@ -1,11 +1,13 @@
+ package upstream
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
+ 	"io"
++	"log/slog"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"reflect"
+@@ -315,6 +317,77 @@
+ 		response.hang = true
+ 		f.ft.on(routeConv, response)
+ 	}
++	inputSizeUser := `{"conversation_id":"` + testCID + `","message":{"author":{"role":"user"},"content":{"content_type":"text","parts":["PRIVATE-REFERENCE-PROMPT"]},"status":"finished_successfully"}}`
++	inputSizeSetup := func(f *flow, failurePayload string) {
++		f.cfg.Options.StreamTimeout = 100 * time.Millisecond
++		f.ft.on(routeFiles, jsonResponse(200, testUploadMeta))
++		f.ft.on(routeUploadPut, fakeResponse{status: 201})
++		f.ft.on(routeUploaded, jsonResponse(200, "{}"))
++		// No EOF or DONE: a confirmed rejection must end the stream itself.
++		hangAfter(f, inputSizeUser, failurePayload)
++	}
++	checkInputSize := func(t *testing.T, f *flow, _ *Result, failure *Error) {
++		fl := failure.Failure
++		if fl.StatusCode != 413 || fl.ErrorType != "invalid_request_error" || fl.Scope != "request" || fl.Retryable || fl.SwitchAccount() || fl.VerifyAccount || fl.Outcome() != "text" {
++			t.Errorf("input-size API contract = %+v", fl)
++		}
++		if failure.PublicMessage() != publicRequestTooLargeText || failure.ConversationID != testCID || failure.PollAttempts != 0 || failure.Timing.PollAttempts != 0 || failure.StreamTimeout != 0 {
++			t.Errorf("input-size failure entered polling or timeout recovery: %+v", failure)
++		}
++		for _, route := range []string{routeFiles, routeUploadPut, routeUploaded, routeConv} {
++			if n := len(f.ft.requests(route)); n != 1 {
++				t.Errorf("%s requested %d times, want once", route, n)
++			}
++		}
++		for _, route := range []string{routeTasks, routeConvDoc, routeConvList} {
++			if n := len(f.ft.requests(route)); n != 0 {
++				t.Errorf("%s requested %d times after explicit input-size rejection", route, n)
++			}
++		}
++		detail := fmt.Sprintf("%+v %s %s", failure, failure.Failure.RawDetail(), failure.RawUpstreamMessage)
++		for _, private := range []string{"PRIVATE-REFERENCE-PROMPT", "PRIVATE-ERROR-TEXT"} {
++			if strings.Contains(detail, private) {
++				t.Errorf("input-size failure retained private payload text: %s", private)
++			}
++		}
++	}
++	imageHint := `{"type":"server_ste_metadata","metadata":{"tool_invoked":true,"turn_use_case":"image gen"}}`
++	imageArguments := `{"prompt":"draw a cat","size":"1024x1024","n":1}`
++	codeMessage := func(id, recipient, contentType, text string, terminal bool) string {
++		status, metadata := "in_progress", `{}`
++		if terminal {
++			status, metadata = "finished_successfully", `{"is_complete":true,"finish_details":{"type":"stop"}}`
++		}
++		recipientField := ""
++		if recipient != "" {
++			recipientField = `,"recipient":` + string(encodeJSON(recipient, jsonCompact))
++		}
++		return `{"conversation_id":"` + testCID + `","message":{"id":"` + id + `","author":{"role":"assistant"}` + recipientField + `,"content":{"content_type":"` + contentType + `","text":` + string(encodeJSON(text, jsonCompact)) + `},"status":"` + status + `","end_turn":false,"metadata":` + metadata + `}}`
++	}
++	const pythonBaseBudget = 30 * time.Millisecond
++	slowPythonSetup := func(f *flow, payloads ...string) {
++		f.cfg.Options.PollTimeout = pythonBaseBudget
++		f.cfg.Options.PollInterval = 5 * time.Millisecond
++		f.ft.on(routeConv, sseResponse(payloads...))
++		pending(f)
++	}
++	checkSlowPython := func(t *testing.T, _ *flow, _ *Result, failure *Error) {
++		if want := pythonBaseBudget * SlowPollMultiplier; failure.PollTimeout != want {
++			t.Errorf("Python poll budget = %s, want %s", failure.PollTimeout, want)
++		}
++	}
++	const ordinaryBudget = 20 * time.Millisecond
++	ordinaryPollSetup := func(f *flow, payloads ...string) {
++		f.cfg.Options.PollTimeout = ordinaryBudget
++		f.cfg.Options.PollInterval = 5 * time.Millisecond
++		f.ft.on(routeConv, sseResponse(payloads...))
++		pending(f)
++	}
++	checkOrdinaryBudget := func(t *testing.T, _ *flow, _ *Result, failure *Error) {
++		if failure.PollTimeout != ordinaryBudget {
++			t.Errorf("non-Python message changed the poll budget: %s, want %s", failure.PollTimeout, ordinaryBudget)
++		}
++	}
+ 
+ 	cases := []struct {
+ 		name     string
+@@ -522,6 +595,62 @@
+ 			},
+ 		},
+ 		{
++			name: "roleless input-size envelope rejects an edit without poll or reupload",
++			setup: func(f *flow) {
++				inputSizeSetup(f, `{"error":{"code":"input_too_large","message":"PRIVATE-ERROR-TEXT"}}`)
++			},
++			request:  Request{Prompt: "PRIVATE-REFERENCE-PROMPT", Images: [][]byte{testPNG(t)}},
++			wantCode: CodeRequestTooLarge,
++			check:    checkInputSize,
++		},
++		{
++			name: "roleless input-size patch rejects an edit without poll or reupload",
++			setup: func(f *flow) {
++				inputSizeSetup(f, `{"o":"patch","v":[{"p":"/message/metadata/error/code","o":"replace","v":"input_too_large"}]}`)
++			},
++			request:  Request{Prompt: "PRIVATE-REFERENCE-PROMPT", Images: [][]byte{testPNG(t)}},
++			wantCode: CodeRequestTooLarge,
++			check:    checkInputSize,
++		},
++		{
++			name: "JSON error string rejects an edit without poll or reupload",
++			setup: func(f *flow) {
++				inputSizeSetup(f, `{"error":"{\"code\":\"input_too_large\",\"message\":\"PRIVATE-ERROR-TEXT\"}"}`)
++			},
++			request:  Request{Prompt: "PRIVATE-REFERENCE-PROMPT", Images: [][]byte{testPNG(t)}},
++			wantCode: CodeRequestTooLarge,
++			check:    checkInputSize,
++		},
++		{
++			name: "confirmed input-size failure never inherits prior assistant text",
++			setup: func(f *flow) {
++				inputSizeSetup(f, "")
++				prior := `{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["PRIVATE-REFERENCE-PROMPT"]},"status":"finished_successfully","end_turn":true}}`
++				hangAfter(f, inputSizeUser, prior, `{"error":{"code":"input_too_large","message":"PRIVATE-ERROR-TEXT"}}`)
++			},
++			request:  Request{Prompt: "PRIVATE-REFERENCE-PROMPT", Images: [][]byte{testPNG(t)}},
++			wantCode: CodeRequestTooLarge,
++			check:    checkInputSize,
++		},
++		{
++			name: "input-size words in user content are not a server rejection",
++			setup: func(f *flow) {
++				echo := `{"message":{"author":{"role":"user"},"content":{"content_type":"text","parts":["input_too_large",{"code":"input_too_large"}]},"metadata":{"error":{"code":"input_too_large"}}}}`
++				f.ft.on(routeConv, sseResponse(append([]string{echo}, fixturePayloads(t, "async_image_pending")...)...))
++				ready(f)
++			},
++			request: Request{Prompt: "Explain the literal string input_too_large in a drawing"},
++		},
++		{
++			name: "input-size words in normal image tool arguments still generate",
++			setup: func(f *flow) {
++				arguments := `{"prompt":"draw the literal word input_too_large","size":"1024x1024","n":1}`
++				payload := `{"conversation_id":"` + testCID + `","message":{"id":"a1","author":{"role":"assistant"},"recipient":"random-image-tool-alias","content":{"content_type":"code","text":` + string(encodeJSON(arguments, jsonCompact)) + `},"status":"finished_successfully","end_turn":false}}`
++				f.ft.on(routeConv, sseResponse(payload, `{"type":"server_ste_metadata","metadata":{"tool_invoked":true,"turn_use_case":"image gen"}}`, "[DONE]"))
++				ready(f)
++			},
++		},
++		{
+ 			name: "connection failure before the stream",
+ 			setup: func(f *flow) {
+ 				f.ft.on(routeConv, fakeResponse{err: errors.New("transport: connection reset by peer")})
+@@ -674,6 +803,80 @@
+ 					t.Errorf("sequence = %v", got)
+ 				}
+ 			},
++		},
++		{
++			name: "explicit Python call with false end_turn uses existing slow poll budget",
++			setup: func(f *flow) {
++				slowPythonSetup(f, imageHint, codeMessage("python-full", "python", "code", "print('drawing')", true))
++			},
++			wantCode: CodePollTimeout,
++			check:    checkSlowPython,
++		},
++		{
++			name: "Python exec recipient patch with false end_turn uses existing slow poll budget",
++			setup: func(f *flow) {
++				patch := `{"o":"patch","v":[{"p":"/message/recipient","o":"replace","v":"python.exec"},{"p":"/message/status","o":"replace","v":"finished_successfully"},{"p":"/message/end_turn","o":"replace","v":false},{"p":"/message/metadata","o":"replace","v":{"is_complete":true,"finish_details":{"type":"stop"}}}]}`
++				slowPythonSetup(f, imageHint, codeMessage("python-patch", "all", "code", "print('drawing')", false), patch)
++			},
++			wantCode: CodePollTimeout,
++			check:    checkSlowPython,
++		},
++		{
++			name: "explicit Python call records slow reason on an immediate image result",
++			setup: func(f *flow) {
++				f.ft.on(routeConv, sseResponse(imageHint, codeMessage("python-ready", "python", "code", "print('drawing')", true)))
++				ready(f)
++			},
++			check: func(t *testing.T, _ *flow, result *Result, _ *Error) {
++				if !reflect.DeepEqual(result.SlowPollReasons, []string{imageSlowPollCodeTool}) {
++					t.Errorf("Python result slow reasons = %v", result.SlowPollReasons)
++				}
++			},
++		},
++		{
++			name: "ordinary image arguments keep the ordinary poll budget",
++			setup: func(f *flow) {
++				ordinaryPollSetup(f, imageHint, codeMessage("image-call", "random-image-tool-alias", "code", imageArguments, true))
++			},
++			wantCode: CodePollTimeout,
++			check:    checkOrdinaryBudget,
++		},
++		{
++			name: "Python in a user prompt is not a Python tool call",
++			setup: func(f *flow) {
++				echo := `{"message":{"author":{"role":"user"},"content":{"content_type":"text","parts":["a poster about python and python.exec"]},"status":"finished_successfully"}}`
++				ordinaryPollSetup(f, echo, imageHint, codeMessage("image-python-word", "random-image-tool-alias", "code", imageArguments, true))
++			},
++			request:  Request{Prompt: "a poster about python and python.exec"},
++			wantCode: CodePollTimeout,
++			check:    checkOrdinaryBudget,
++		},
++		{
++			name: "new full message does not inherit a previous Python recipient",
++			setup: func(f *flow) {
++				ordinaryPollSetup(f, imageHint, codeMessage("before", "python", "text", "planning", false), codeMessage("after", "", "code", imageArguments, true))
++			},
++			wantCode: CodePollTimeout,
++			check:    checkOrdinaryBudget,
++		},
++		{
++			name: "new message id patch does not inherit a previous Python recipient",
++			setup: func(f *flow) {
++				patch := `{"o":"patch","v":[{"p":"/message/id","o":"replace","v":"after-patch"},{"p":"/message/content/content_type","o":"replace","v":"code"},{"p":"/message/content/text","o":"replace","v":` + string(encodeJSON(imageArguments, jsonCompact)) + `},{"p":"/message/status","o":"replace","v":"finished_successfully"},{"p":"/message/end_turn","o":"replace","v":false},{"p":"/message/metadata","o":"replace","v":{"is_complete":true,"finish_details":{"type":"stop"}}}]}`
++				ordinaryPollSetup(f, imageHint, codeMessage("before-patch", "python", "text", "planning", false), patch)
++			},
++			wantCode: CodePollTimeout,
++			check:    checkOrdinaryBudget,
++		},
++		{
++			name: "ignored user role does not leave a previous Python recipient on patches",
++			setup: func(f *flow) {
++				echo := `{"message":{"author":{"role":"user"},"content":{"content_type":"text","parts":["python"]},"status":"finished_successfully"}}`
++				patch := `{"o":"patch","v":[{"p":"/message/content/content_type","o":"replace","v":"code"},{"p":"/message/content/text","o":"replace","v":` + string(encodeJSON(imageArguments, jsonCompact)) + `},{"p":"/message/status","o":"replace","v":"finished_successfully"},{"p":"/message/end_turn","o":"replace","v":false},{"p":"/message/metadata","o":"replace","v":{"is_complete":true,"finish_details":{"type":"stop"}}}]}`
++				ordinaryPollSetup(f, imageHint, codeMessage("before-user", "python", "text", "planning", false), echo, patch)
++			},
++			wantCode: CodePollTimeout,
++			check:    checkOrdinaryBudget,
+ 		},
+ 		{
+ 			name: "transparent background triples the poll budget",
+@@ -1140,6 +1343,109 @@
+ 	}
+ 	if got := runtime.NumGoroutine(); got > baseline {
+ 		t.Errorf("%d goroutines, %d before the calls", got, baseline)
++	}
++}
++
++func TestImageStreamDiagnostics(t *testing.T) {
++	const privateText = "PRIVATE-PROMPT-AND-ERROR-DETAIL"
++	user := `{"v":{"conversation_id":"` + testCID + `","message":{"id":"u1","author":{"role":"user"},"content":{"content_type":"text","parts":["` + privateText + `"]},"status":"finished_successfully","end_turn":null}}}`
++	assistant := `{"v":{"message":{"id":"a1","author":{"role":"assistant"},"recipient":"all","content":{"content_type":"text","parts":["` + privateText + `"]},"status":"in_progress","end_turn":false}}}`
++	terminal := `{"v":{"message":{"id":"a1","author":{"role":"assistant"},"recipient":"image_gen","content":{"content_type":"code","text":"` + privateText + `"},"status":"finished_successfully","end_turn":false,"metadata":{"finish_details":{"type":"stop"}}}}}`
++	tool := func(ids string) string {
++		return `{"v":{"message":{"id":"t1","author":{"role":"tool"},"content":{"content_type":"multimodal_text","parts":[` + ids + `]},"status":"finished_successfully","metadata":{"async_task_type":"image_gen"}}}}`
++	}
++	cases := []struct {
++		name       string
++		response   fakeResponse
++		contextEnd string
++		wantError  bool
++		want       map[string]any
++	}{
++		{"200 non-SSE is still read to EOF", fakeResponse{status: 200, header: map[string][]string{"Content-Type": {"application/json; boundary=" + privateText}}, body: `{"detail":"` + privateText + `"}`}, "", false,
++			map[string]any{"reason": "eof", "content_type": "application/json", "sse_event_count": 0.0, "last_role": "unknown"}},
++		{"user-only EOF", sseResponse(user), "", false,
++			map[string]any{"reason": "eof", "conversation_id": testCID, "sse_event_count": 1.0, "assistant_role_events": 0.0, "tool_role_events": 0.0, "last_role": "user", "last_status": "finished_successfully", "last_end_turn": "unknown"}},
++		{"user-only DONE", sseResponse(user, "[DONE]"), "", false,
++			map[string]any{"reason": "done", "conversation_id": testCID, "sse_event_count": 2.0, "last_role": "user"}},
++		{"confirmed input size ends immediately with safe metadata", hangingSSE(user, `{"error":{"code":"input_too_large","message":"`+privateText+`"}}`), "", true,
++			map[string]any{"reason": "input_too_large", "last_role": "user", "last_payload_role": "unknown", "structured_error_seen": true, "failure_codes": []any{CodeRequestTooLarge}}},
++		{"roleless error stays observable after DONE", sseResponse(user, `{"type":"error","error":{"code":"upstream_model_not_found","message":"`+privateText+`"}}`, "[DONE]"), "", false,
++			map[string]any{"reason": "done", "last_event_type": "error", "last_role": "user", "last_payload_role": "unknown", "structured_error_seen": true, "failure_codes": []any{CodeModelNotFound}}},
++		{"terminal boundary behavior stays unchanged", hangingSSE(user, terminal), "", false,
++			map[string]any{"reason": "terminal", "sse_event_count": 2.0, "assistant_role_events": 1.0, "last_role": "assistant", "last_status": "finished_successfully", "last_end_turn": "false", "last_recipient": "image_gen", "last_payload_completion_marker": true}},
++		{"roleless stop is recorded without payload text", hangingSSE(user, `{"type":"stop","v":{"is_complete":true,"status":"finished_successfully","detail":"`+privateText+`"}}`), "", false,
++			map[string]any{"reason": "terminal", "last_event_type": "stop", "last_role": "user", "last_payload_role": "unknown", "last_payload_completion_marker": true, "assistant_role_events": 0.0}},
++		{"roleless patches keep message metadata", sseResponse(user, assistant, `{"o":"patch","v":[{"p":"/message/recipient","o":"replace","v":"image_gen"},{"p":"/message/status","o":"replace","v":"finished_successfully"},{"p":"/message/end_turn","o":"replace","v":false}]}`, "[DONE]"), "", false,
++			map[string]any{"reason": "done", "assistant_role_events": 1.0, "last_role": "assistant", "last_payload_role": "unknown", "last_status": "finished_successfully", "last_end_turn": "false", "last_recipient": "image_gen"}},
++		{"reference IDs are not generated images", sseResponse(user, tool(`{"asset_pointer":"file-service://file-UP1"}`), "[DONE]"), "", false,
++			map[string]any{"reason": "done", "tool_role_events": 1.0, "has_generated_image_id": false}},
++		{"generated IDs are observed", sseResponse(user, tool(`{"asset_pointer":"file-service://file-UP1"},{"asset_pointer":"file-service://`+testFileID+`"}`), "[DONE]"), "", false,
++			map[string]any{"reason": "done", "tool_role_events": 1.0, "has_generated_image_id": true}},
++		{"stream deadline", hangingSSE(user), "", true,
++			map[string]any{"reason": "deadline", "last_role": "user", "http_status": 200.0}},
++		{"read error detail is private", fakeResponse{status: 200, header: map[string][]string{"Content-Type": {"text/event-stream"}}, body: sseBody(user), fail: errors.New(privateText)}, "", true,
++			map[string]any{"reason": "read_error", "last_role": "user", "http_status": 200.0}},
++		{"non-2xx body is private", jsonResponse(403, `{"detail":"`+privateText+`"}`), "", true,
++			map[string]any{"reason": "http_status", "http_status": 403.0, "content_type": "application/json"}},
++		{"transport error detail is private", fakeResponse{err: errors.New(privateText)}, "", true,
++			map[string]any{"reason": "read_error", "http_status": 0.0, "content_type": "missing"}},
++		{"caller cancelled", fakeResponse{}, "cancelled", true,
++			map[string]any{"reason": "cancelled", "http_status": 0.0}},
++		{"caller deadline", fakeResponse{}, "deadline", true,
++			map[string]any{"reason": "deadline", "http_status": 0.0}},
++		{"unexpected correlation values stay private", sseResponse(`{"conversation_id":"`+testToken+`"}`, "[DONE]"), "", false,
++			map[string]any{"reason": "done", "conversation_id": "unknown"}},
++		{"unrecognized metadata never becomes log text", sseResponse(user, `{"type":"`+privateText+`","message":{"author":{"role":"assistant"},"recipient":"`+privateText+`","content":{"content_type":"text","parts":["`+testToken+`"]},"status":"`+privateText+`","end_turn":false},"error":{"code":"`+privateText+`"}}`, "[DONE]"), "", false,
++			map[string]any{"reason": "done", "last_event_type": "unknown", "last_status": "unknown", "last_recipient": "unknown", "structured_error_seen": true}},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			ft := newFakeTransport(t)
++			cfg := chatConfig(t, ft)
++			var logs bytes.Buffer
++			cfg.Options.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
++			cfg.Options.StreamTimeout = 25 * time.Millisecond
++			ft.on(routeConv, tc.response)
++			client, err := New(cfg)
++			if err != nil {
++				t.Fatal(err)
++			}
++			ctx := context.Background()
++			if tc.contextEnd == "cancelled" {
++				cancelled, cancel := context.WithCancel(ctx)
++				cancel()
++				ctx = cancelled
++			} else if tc.contextEnd == "deadline" {
++				expired, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
++				defer cancel()
++				ctx = expired
++			}
++			g := &generation{c: client, req: Request{Model: "gpt-image-2", Prompt: privateText}, prompt: privateText, state: newTurnState(), refs: []uploadedFile{{fileID: "file-UP1"}}}
++			err = g.runConversation(ctx, requirements{}, "CONDUIT-SECRET")
++			if (err != nil) != tc.wantError {
++				t.Fatalf("error presence = %v, want %v", err != nil, tc.wantError)
++			}
++			if ft.opened != ft.closed {
++				t.Errorf("opened %d bodies, closed %d", ft.opened, ft.closed)
++			}
++			var got map[string]any
++			if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &got); err != nil {
++				t.Fatalf("expected exactly one structured stream-end log: %v", err)
++			}
++			if got["msg"] != "image_stream_end" {
++				t.Errorf("event = %v", got["msg"])
++			}
++			for key, want := range tc.want {
++				if !reflect.DeepEqual(got[key], want) {
++					t.Errorf("%s = %v, want %v", key, got[key], want)
++				}
++			}
++			for _, secret := range []string{privateText, testToken, "CONDUIT-SECRET", "payload_preview", "file-UP1", testFileID} {
++				if strings.Contains(logs.String(), secret) {
++					t.Errorf("diagnostic log contains private data or raw preview: %s", secret)
++				}
++			}
++		})
+ 	}
+ }
+ 

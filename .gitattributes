@@ -41,3 +41,6 @@ electron/** linguist-vendored
 
 # TanStack Router regenerates this manifest from the route source files.
 web/src/routeTree.gen.ts linguist-generated
+
+# Unified patch context intentionally contains space-prefixed tabs and blanks.
+patches/chatgpt2api-go/*.patch -whitespace
