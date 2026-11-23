@@ -83,7 +83,7 @@ func NormalizeImageQuality(raw string) string {
 		return ImageQualityMedium
 	case "low", "draft", "basic":
 		return ImageQualityLow
-	case "high", "hd", "hight", "highest", "ultra", "max", "maximum", "best":
+	case "high", "hd", "hight", "highest", "ultra", "max", "maximum", "best", "xhigh", "x-high", "x_high":
 		return ImageQualityHigh
 	default:
 		return q
