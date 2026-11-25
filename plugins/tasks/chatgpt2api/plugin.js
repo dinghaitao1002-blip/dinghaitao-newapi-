@@ -26,6 +26,13 @@
 // `metadata.response_format`. renderFinal hands it to the host as
 // `image_response_format`, and the host downloads and inlines base64 only when
 // asked. Images stay on chatgpt2api's public image URLs; nothing is proxied.
+// Top-level form: some clients send no image_generation tool and put `size`
+// and `response_format` at the top level of the body, then read the image
+// from `output[0].result` whatever the format. decodeRequest builds the tool
+// from those fields, and for the url format the task carries `url_in_result`
+// (plugin state, then the stored Response's metadata) so that renderFinal
+// also writes the URL into `result`. A request that carries the tool is
+// untouched: its `result` stays base64 or null.
 
 const IMAGE_MODELS = [
   "gpt-image-2",
@@ -145,7 +152,9 @@ export function parseSubmitResponse(ctx, resp) {
   const taskId = trimmed(body.id);
   if (taskId.indexOf("resp_") !== 0) throw new Error("upstream did not return a resp_ id");
   const format = (ctx.requestBody && ctx.requestBody.response_format) || "url";
-  return { taskId: taskId, taskData: body, state: { response_format: format } };
+  const state = { response_format: format };
+  if (ctx.requestBody && ctx.requestBody.url_in_result) state.url_in_result = true;
+  return { taskId: taskId, taskData: body, state: state };
 }
 
 export function extractUsage() {
@@ -167,14 +176,24 @@ export function buildQueryRequest(ctx) {
   return buildBatchQueryRequest(ctx, [ctx]);
 }
 
-export function parseBatchResult(_ctx, body, response) {
+export function parseBatchResult(ctx, body, response) {
   const failure = upstreamError(response && response.status !== undefined ? response.status : 200, body);
   if (failure) throw failure;
   if (!isObject(body) || !Array.isArray(body.data)) throw new Error("batch reply has no data array");
+  const urlInResult = {};
+  for (const task of (isObject(ctx) && Array.isArray(ctx.tasks) && ctx.tasks) || []) {
+    if (isObject(task) && isObject(task.state) && task.state.url_in_result) urlInResult[task.taskId] = true;
+  }
   const results = [];
   const data = body.data;
   for (const item of data) {
-    if (isObject(item) && trimmed(item.id)) results.push(responseResult(item));
+    if (!isObject(item) || !trimmed(item.id)) continue;
+    const result = responseResult(item);
+    // renderFinal sees only the stored Response, so the mark travels in it.
+    if (result.status === "SUCCESS" && urlInResult[item.id]) {
+      result.data = Object.assign({}, item, { metadata: Object.assign({}, item.metadata, { url_in_result: true }) });
+    }
+    results.push(result);
   }
   // The host leaves tasks absent from a batch reply untouched, so a purged
   // Response must be reported explicitly or it would poll until the sweep.
@@ -188,7 +207,7 @@ export function parseBatchResult(_ctx, body, response) {
 export function parseTaskResult(ctx, body, response) {
   const failure = upstreamError(response && response.status !== undefined ? response.status : 200, body);
   if (failure) throw failure;
-  const results = parseBatchResult(ctx, { data: [body], missing_ids: [] }, { status: 200 });
+  const results = parseBatchResult({ tasks: [ctx] }, { data: [body], missing_ids: [] }, { status: 200 });
   if (results.length) return results[0];
   return { status: "UNKNOWN", reason: "response body is not a Response object" };
 }
@@ -198,19 +217,34 @@ export const protocols = {
     decodeRequest: function (ctx) {
       if (!ctx.body || ctx.body.kind !== "json" || !isObject(ctx.body.value)) throw new Error("JSON object required");
       const req = ctx.body.value;
-      const tool = imageTool(req.tools);
-      if (!tool) throw new Error("background image generation needs an image_generation tool");
+      let tools = req.tools;
+      let tool = imageTool(tools);
+      const topLevelForm = !tool;
+      if (topLevelForm) {
+        tool = { type: "image_generation" };
+        if (typeof req.size === "string" && req.size.trim()) tool.size = req.size.trim();
+        if (req.response_format !== undefined) tool.response_format = req.response_format;
+        tools = [tool];
+      }
       if (typeof req.input !== "string" && !Array.isArray(req.input)) throw new Error("input must be a string or array");
       const format = tool.response_format === undefined ? "url" : tool.response_format;
       if (format !== "url" && format !== "b64_json") throw new Error("response_format must be url or b64_json");
-      const requestBody = { model: ctx.model, input: req.input, tools: req.tools, response_format: format };
+      const requestBody = { model: ctx.model, input: req.input, tools: tools, response_format: format };
       if (req.instructions !== undefined) requestBody.instructions = req.instructions;
+      if (topLevelForm && format === "url") requestBody.url_in_result = true;
       return { kind: "submit", model: ctx.model, action: "image", requestBody: requestBody };
     },
     renderFinal: function (_ctx, task) {
       const data = isObject(task.data) ? task.data : {};
       const format = isObject(data.metadata) && data.metadata.response_format === "b64_json" ? "b64_json" : "url";
-      return { output: Array.isArray(data.output) ? data.output : [], image_response_format: format };
+      let output = Array.isArray(data.output) ? data.output : [];
+      if (isObject(data.metadata) && data.metadata.url_in_result) {
+        output = output.map(function (item) {
+          const urlOnly = isObject(item) && item.type === "image_generation_call" && !item.result && item.url;
+          return urlOnly ? Object.assign({}, item, { result: item.url }) : item;
+        });
+      }
+      return { output: output, image_response_format: format };
     },
   },
 };

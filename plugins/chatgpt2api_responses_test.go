@@ -50,13 +50,10 @@ func chatgpt2apiDecode(t *testing.T, plugin *jsplugin.LoadedPlugin, body map[str
 	return chatgpt2apiJSON(t, value), nil
 }
 
-func TestChatgpt2apiDecodeRequiresImageTool(t *testing.T) {
+func TestChatgpt2apiDecodeReadsImageTool(t *testing.T) {
 	_, plugin := loadChatgpt2apiPlugin(t)
 
-	_, err := chatgpt2apiDecode(t, plugin, map[string]any{"model": "gpt-image-2", "input": "a red apple"})
-	require.ErrorContains(t, err, "image_generation")
-
-	_, err = chatgpt2apiDecode(t, plugin, map[string]any{
+	_, err := chatgpt2apiDecode(t, plugin, map[string]any{
 		"model": "gpt-image-2", "input": "a red apple",
 		"tools": []any{map[string]any{"type": "image_generation", "response_format": "jpeg"}},
 	})
@@ -285,4 +282,106 @@ func TestChatgpt2apiRenderFinalPassesHint(t *testing.T) {
 		map[string]any{"task_id": "task_public", "status": "SUCCESS", "data": map[string]any{"id": "resp_done", "status": "completed", "output": output}})
 	require.NoError(t, err)
 	assert.Equal(t, "url", chatgpt2apiJSON(t, value)["image_response_format"])
+}
+
+// A client that sends no image_generation tool puts size and response_format
+// at the top level and reads the image from output[0].result.
+func TestChatgpt2apiTopLevelFormWritesURLIntoResult(t *testing.T) {
+	_, plugin := loadChatgpt2apiPlugin(t)
+	input := []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "input_text", "text": "a red apple"},
+		map[string]any{"type": "input_image", "image_url": "https://img.example/ref.jpg"},
+	}}}
+
+	decoded, err := chatgpt2apiDecode(t, plugin, map[string]any{
+		"model": "gpt-image-2", "background": true, "size": "1024x1536", "response_format": "url", "input": input,
+	})
+	require.NoError(t, err)
+	requestBody := decoded["requestBody"].(map[string]any)
+	assert.Equal(t, []any{map[string]any{"type": "image_generation", "size": "1024x1536", "response_format": "url"}}, requestBody["tools"])
+	assert.Equal(t, "url", requestBody["response_format"])
+	assert.Equal(t, true, requestBody["url_in_result"])
+	assert.Equal(t, input, requestBody["input"])
+
+	decoded, err = chatgpt2apiDecode(t, plugin, map[string]any{"model": "gpt-image-2", "input": "a red apple"})
+	require.NoError(t, err)
+	requestBody = decoded["requestBody"].(map[string]any)
+	assert.Equal(t, []any{map[string]any{"type": "image_generation"}}, requestBody["tools"])
+	assert.Equal(t, true, requestBody["url_in_result"])
+
+	// base64 already arrives in result, so the b64_json form needs no mark.
+	decoded, err = chatgpt2apiDecode(t, plugin, map[string]any{"model": "gpt-image-2", "input": "a red apple", "response_format": "b64_json"})
+	require.NoError(t, err)
+	requestBody = decoded["requestBody"].(map[string]any)
+	assert.Equal(t, "b64_json", requestBody["response_format"])
+	assert.NotContains(t, requestBody, "url_in_result")
+
+	_, err = chatgpt2apiDecode(t, plugin, map[string]any{"model": "gpt-image-2", "input": "a red apple", "response_format": "jpeg"})
+	require.ErrorContains(t, err, "response_format")
+
+	// A request that carries the tool keeps its form: top-level fields are not
+	// read and result is left alone.
+	decoded, err = chatgpt2apiDecode(t, plugin, map[string]any{
+		"model": "gpt-image-2", "input": "a red apple", "size": "512x512", "response_format": "b64_json",
+		"tools": []any{map[string]any{"type": "image_generation", "size": "1024x1024"}},
+	})
+	require.NoError(t, err)
+	requestBody = decoded["requestBody"].(map[string]any)
+	assert.Equal(t, []any{map[string]any{"type": "image_generation", "size": "1024x1024"}}, requestBody["tools"])
+	assert.Equal(t, "url", requestBody["response_format"])
+	assert.NotContains(t, requestBody, "url_in_result")
+
+	value, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+		"baseUrl": "http://chatgpt2api-lb", "apiKey": "sk-channel", "action": "image", "model": "gpt-image-2", "upstreamModel": "gpt-image-2",
+		"requestBody":    map[string]any{"model": "gpt-image-2", "input": "a red apple", "response_format": "url", "url_in_result": true, "tools": []any{map[string]any{"type": "image_generation"}}},
+		"requestHeaders": map[string]any{},
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, chatgpt2apiJSON(t, value)["body"].(map[string]any), "url_in_result")
+
+	value, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse",
+		map[string]any{"requestBody": map[string]any{"response_format": "url", "url_in_result": true}},
+		map[string]any{"statusCode": 200, "body": map[string]any{"id": "resp_top", "status": "queued"}})
+	require.NoError(t, err)
+	state := chatgpt2apiJSON(t, value)["state"].(map[string]any)
+	assert.Equal(t, map[string]any{"response_format": "url", "url_in_result": true}, state)
+
+	completed := func(id string) map[string]any {
+		return map[string]any{"id": id, "status": "completed", "metadata": map[string]any{"response_format": "url"}, "output": []any{
+			map[string]any{"type": "image_generation_call", "status": "completed", "result": nil, "url": "https://img.example/" + id + ".png"},
+		}}
+	}
+	value, err = plugin.Engine.Call(t.Context(), "parseBatchResult",
+		map[string]any{"tasks": []any{
+			map[string]any{"taskId": "resp_top", "state": state},
+			map[string]any{"taskId": "resp_tool", "state": map[string]any{"response_format": "url"}},
+		}},
+		map[string]any{"data": []any{completed("resp_top"), completed("resp_tool")}, "missing_ids": []any{}},
+		map[string]any{"status": 200, "headers": map[string]any{}})
+	require.NoError(t, err)
+	stored := map[string]map[string]any{}
+	for _, item := range chatgpt2apiJSONList(t, value) {
+		stored[item["taskId"].(string)] = item["data"].(map[string]any)
+	}
+
+	render := func(data map[string]any) map[string]any {
+		rendered, renderErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_responses", "renderFinal"},
+			map[string]any{"requestBody": map[string]any{}},
+			map[string]any{"task_id": "task_public", "status": "SUCCESS", "data": data})
+		require.NoError(t, renderErr)
+		payload := chatgpt2apiJSON(t, rendered)
+		assert.Equal(t, "url", payload["image_response_format"])
+		return payload["output"].([]any)[0].(map[string]any)
+	}
+	topLevel := render(stored["resp_top"])
+	assert.Equal(t, "https://img.example/resp_top.png", topLevel["result"])
+	assert.Equal(t, "https://img.example/resp_top.png", topLevel["url"])
+	withTool := render(stored["resp_tool"])
+	assert.Nil(t, withTool["result"])
+	assert.Equal(t, "https://img.example/resp_tool.png", withTool["url"])
+
+	value, err = plugin.Engine.Call(t.Context(), "parseTaskResult",
+		map[string]any{"taskId": "resp_top", "state": state}, completed("resp_top"), map[string]any{"status": 200})
+	require.NoError(t, err)
+	assert.Equal(t, "https://img.example/resp_top.png", render(chatgpt2apiJSON(t, value)["data"].(map[string]any))["result"])
 }
