@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -9,10 +10,146 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
+
+func TestGroupModelPricingOptionPersistenceAndValidation(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&Option{}))
+	previousOptions := common.OptionMap
+	previousPricing := config.GlobalConfig.ExportAllConfigs()[billing_setting.GroupModelPricingOption]
+	common.OptionMap = map[string]string{}
+	t.Cleanup(func() {
+		common.OptionMap = previousOptions
+		config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing": previousPricing})
+		require.NoError(t, DB.Where(Option{Key: billing_setting.GroupModelPricingOption}).Delete(&Option{}).Error)
+	})
+	rules := map[string]map[string]billing_setting.GroupModelPricingRule{
+		"retail": {
+			"request-model": {Unit: "request", Expression: `tier("group_model", fixed(0))`, Enabled: true},
+			"image-model":   {Unit: "image", Expression: `tier("group_model", fixed(0.02)) * image_count`, Enabled: true},
+			"video-model":   {Unit: "second", Expression: `tier("group_model", u("seconds") * 5e-2)`, Enabled: true},
+			"token-model":   {Unit: "token", Expression: `tier("group_model", p * 2 + c * 8)`, Enabled: true},
+		},
+	}
+	encoded, err := common.Marshal(rules)
+	require.NoError(t, err)
+	validJSON := string(encoded)
+	require.NoError(t, UpdateOption(billing_setting.GroupModelPricingOption, validJSON))
+	var persisted Option
+	require.NoError(t, DB.Where(Option{Key: billing_setting.GroupModelPricingOption}).First(&persisted).Error)
+	assert.Equal(t, validJSON, persisted.Value)
+	for _, tc := range []struct {
+		model string
+		want  billing_setting.GroupModelPricingValues
+	}{
+		{"request-model", billing_setting.GroupModelPricingValues{UnitPrice: 0}},
+		{"image-model", billing_setting.GroupModelPricingValues{UnitPrice: 0.02}},
+		{"video-model", billing_setting.GroupModelPricingValues{UnitPrice: 0.05}},
+		{"token-model", billing_setting.GroupModelPricingValues{InputPrice: 2, OutputPrice: 8}},
+	} {
+		rule, ok := billing_setting.GetGroupModelPricingRule("retail", tc.model)
+		require.True(t, ok, "explicit zero must remain configured")
+		values, err := billing_setting.ParseGroupModelPricingRule(rule)
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, values)
+	}
+	_, found := billing_setting.GetGroupModelPricingRule("other-group", "image-model")
+	assert.False(t, found, "group rules must not leak into other groups")
+	_, found = billing_setting.GetGroupModelPricingRule("retail", "other-model")
+	assert.False(t, found, "model names require an exact match")
+	snapshot := billing_setting.GetGroupModelPricingCopy()
+	delete(snapshot["retail"], "image-model")
+	_, found = billing_setting.GetGroupModelPricingRule("retail", "image-model")
+	assert.True(t, found, "editing a returned snapshot must not mutate serving prices")
+
+	// Exercise the same publication boundary used when loading persisted options.
+	config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing": "{}"})
+	_, found = billing_setting.GetGroupModelPricingRule("retail", "image-model")
+	require.False(t, found)
+	require.NoError(t, updateOptionMap(persisted.Key, persisted.Value))
+	_, found = billing_setting.GetGroupModelPricingRule("retail", "image-model")
+	require.True(t, found)
+
+	for _, invalid := range []string{
+		`null`, `[]`, `{"retail":null}`, `{"retail":{"model":null}}`,
+		`{"retail":{"model":{"unit":"request","expression":"tier(\"group_model\",fixed(1))"}}}`,
+		`{"retail":{"model":{"unit":"request","expression":"tier(\"group_model\",fixed(1))","enabled":null}}}`,
+		`{"retail":{"model":{"unit":"request","expression":"tier(\"group_model\",fixed(1))","enabled":"true"}}}`,
+		`{"retail":{"model":{"unit":"request","expression":"tier(\"group_model\",fixed(1))","enabled":true,"price":1}}}`,
+		`{" ":{}}`, `{"retail":{" ":{}}}`,
+	} {
+		t.Run(invalid, func(t *testing.T) {
+			require.Error(t, UpdateOption(billing_setting.GroupModelPricingOption, invalid))
+			require.Error(t, updateOptionMap(billing_setting.GroupModelPricingOption, invalid))
+			require.NoError(t, DB.Where(Option{Key: persisted.Key}).First(&persisted).Error)
+			assert.Equal(t, validJSON, persisted.Value, "invalid writes must preserve the stored configuration")
+			assert.Equal(t, validJSON, common.OptionMap[billing_setting.GroupModelPricingOption])
+			_, found := billing_setting.GetGroupModelPricingRule("retail", "image-model")
+			assert.True(t, found, "invalid startup data must not replace the serving configuration")
+		})
+	}
+	for _, invalid := range []billing_setting.GroupModelPricingRule{
+		{Unit: "unknown", Expression: `tier("group_model", fixed(1))`},
+		{Unit: "request", Expression: `tier("group_model", fixed(-1))`},
+		{Unit: "request", Expression: `tier("group_model", fixed(1e309))`},
+		{Unit: "request", Expression: `tier("group_model", fixed(1e308))`},
+		{Unit: "request", Expression: `tier("other", fixed(1))`},
+		{Unit: "request", Expression: `true ? tier("group_model", fixed(1)) : tier("hidden", fixed(2))`},
+		{Unit: "image", Expression: `tier("group_model", fixed(1))`},
+		{Unit: "image", Expression: `tier("group_model", fixed(1)) * image_count * 2`},
+		{Unit: "second", Expression: `tier("group_model", u("image_count") * 1)`},
+		{Unit: "second", Expression: `tier("group_model", u("seconds") * 1 + 1)`},
+		{Unit: "token", Expression: `tier("group_model", p * 2 + c * -1)`},
+		{Unit: "token", Expression: `tier("group_model", p * 2 + c * 8 + cr * 1)`},
+	} {
+		t.Run(invalid.Unit+":"+invalid.Expression, func(t *testing.T) {
+			_, err := billing_setting.ParseGroupModelPricingRule(invalid)
+			require.Error(t, err)
+			bad, err := common.Marshal(map[string]map[string]billing_setting.GroupModelPricingRule{"retail": {"invalid-model": invalid}})
+			require.NoError(t, err)
+			require.Error(t, UpdateOption(billing_setting.GroupModelPricingOption, string(bad)), "disabled rules must also validate")
+			assert.Equal(t, validJSON, common.OptionMap[billing_setting.GroupModelPricingOption])
+		})
+	}
+
+	t.Run("failed database write keeps serving prices", func(t *testing.T) {
+		const callback = "test:reject_group_model_pricing_update"
+		require.NoError(t, DB.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
+			if option, ok := tx.Statement.Dest.(*Option); ok && option.Key == billing_setting.GroupModelPricingOption {
+				tx.AddError(errors.New("forced group pricing persistence failure"))
+			}
+		}))
+		defer func() { require.NoError(t, DB.Callback().Update().Remove(callback)) }()
+		require.ErrorContains(t, UpdateOption(billing_setting.GroupModelPricingOption, "{}"), "forced group pricing persistence failure")
+		require.NoError(t, DB.Where(Option{Key: persisted.Key}).First(&persisted).Error)
+		assert.Equal(t, validJSON, persisted.Value)
+		assert.Equal(t, validJSON, common.OptionMap[billing_setting.GroupModelPricingOption])
+		_, found := billing_setting.GetGroupModelPricingRule("retail", "image-model")
+		assert.True(t, found)
+	})
+
+	rules["retail"]["image-model"] = billing_setting.GroupModelPricingRule{Unit: "image", Expression: `tier("group_model", fixed(0)) * image_count`, Enabled: false}
+	encoded, err = common.Marshal(rules)
+	require.NoError(t, err)
+	require.NoError(t, UpdateOption(billing_setting.GroupModelPricingOption, string(encoded)))
+	_, found = billing_setting.GetGroupModelPricingRule("retail", "image-model")
+	assert.False(t, found, "disabled zero rules must fall back instead of granting free requests")
+	delete(rules["retail"], "video-model")
+	encoded, err = common.Marshal(rules)
+	require.NoError(t, err)
+	require.NoError(t, UpdateOption(billing_setting.GroupModelPricingOption, string(encoded)))
+	_, found = billing_setting.GetGroupModelPricingRule("retail", "video-model")
+	assert.False(t, found, "replacing the map must remove deleted model rules")
+	require.NoError(t, UpdateOption(billing_setting.GroupModelPricingOption, "{}"))
+	_, found = billing_setting.GetGroupModelPricingRule("retail", "request-model")
+	assert.False(t, found, "deleting a group must clear its explicit zero rule")
+}
 
 // The existing model TestMain selects a real SQLite, MySQL or PostgreSQL
 // database. Run this contract on each engine; Redis is optional for local runs.

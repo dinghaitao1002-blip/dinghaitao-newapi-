@@ -7467,6 +7467,22 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Add model price": "Add model price",
+    "Billing unit": "Billing unit",
+    "Disabled or removed prices fall back to global pricing. Click “Save group settings” after applying the draft to make changes effective.": "Disabled or removed prices fall back to global pricing. Click “Save group settings” after applying the draft to make changes effective.",
+    "Enable group price": "Enable group price",
+    "Group model prices": "Group model prices",
+    "Group model prices contain invalid rules. Correct the JSON before editing model prices.": "Group model prices contain invalid rules. Correct the JSON before editing model prices.",
+    "Input price (USD / 1M tokens)": "Input price (USD / 1M tokens)",
+    "Model price {{index}}": "Model price {{index}}",
+    "Model prices are configured separately within each group. Disabled or missing rules use global pricing.": "Model prices are configured separately within each group. Disabled or missing rules use global pricing.",
+    "Model prices for {{group}}": "Model prices for {{group}}",
+    "Models without an enabled group price use their global pricing.": "Models without an enabled group price use their global pricing.",
+    "No model prices in this group": "No model prices in this group",
+    "Output price (USD / 1M tokens)": "Output price (USD / 1M tokens)",
+    "Per second": "Per second",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.",
+    "This model already has a price in this group": "This model already has a price in this group"
   }
 }

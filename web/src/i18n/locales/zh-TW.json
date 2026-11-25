@@ -7467,6 +7467,22 @@
     "Zhipu": "智譜",
     "Zhipu GLM": "智譜GLM",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "Add model price": "新增模型價格",
+    "Billing unit": "計費單位",
+    "Disabled or removed prices fall back to global pricing. Click “Save group settings” after applying the draft to make changes effective.": "停用或刪除後恢復全域定價。套用至草稿後，需點擊「儲存分組設定」才會生效。",
+    "Enable group price": "啟用分組價格",
+    "Group model prices": "分組模型價格",
+    "Group model prices contain invalid rules. Correct the JSON before editing model prices.": "分組模型價格有無效規則，請先在 JSON 模式修正後再編輯。",
+    "Input price (USD / 1M tokens)": "輸入價格（美元 / 百萬 Token）",
+    "Model price {{index}}": "模型價格 {{index}}",
+    "Model prices are configured separately within each group. Disabled or missing rules use global pricing.": "每個分組可分別設定多個模型的價格。規則停用或未設定時使用全域定價。",
+    "Model prices for {{group}}": "分組 {{group}} 的模型價格",
+    "Models without an enabled group price use their global pricing.": "未啟用分組價格的模型使用全域定價。",
+    "No model prices in this group": "此分組尚未設定模型價格",
+    "Output price (USD / 1M tokens)": "輸出價格（美元 / 百萬 Token）",
+    "Per second": "按秒",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "為分組內每個模型單獨設定基礎價格。單位為美元，計費時乘一次實際分組倍率；使用者專屬價格優先。",
+    "This model already has a price in this group": "此分組內該模型已設定價格"
   }
 }

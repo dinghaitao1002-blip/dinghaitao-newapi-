@@ -64,6 +64,32 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 	return groupRatioInfo
 }
 
+// HasGroupModelPricing checks the client-facing identities, never the upstream
+// channel mapping. Auto-group retries use it before refreshing their reservation.
+func HasGroupModelPricing(info *relaycommon.RelayInfo, group string) bool {
+	if info == nil {
+		return false
+	}
+	_, _, ok := groupModelPricingRule(group, info.GetOriginModelName())
+	return ok
+}
+
+// GroupModelPricingRuleForModel shares relay's client-name/canonical-name
+// precedence with public pricing. Channel model mappings never set the price.
+func GroupModelPricingRuleForModel(group, origin string) (billing_setting.GroupModelPricingRule, bool) {
+	_, rule, ok := groupModelPricingRule(group, origin)
+	return rule, ok
+}
+
+func groupModelPricingRule(group, origin string) (string, billing_setting.GroupModelPricingRule, bool) {
+	for _, name := range []string{origin, resolveBillingModelName(origin)} {
+		if rule, ok := billing_setting.GetGroupModelPricingRule(group, name); ok {
+			return name, rule, true
+		}
+	}
+	return "", billing_setting.GroupModelPricingRule{}, false
+}
+
 func resolveImageQualityPricing(c *gin.Context, info *relaycommon.RelayInfo, meta *types.TokenCountMeta) (float64, bool, error) {
 	if info == nil || info.Request == nil {
 		return 0, false, nil
@@ -141,6 +167,68 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		}
 	}
 	billingModelName := info.GetBillingModelName()
+	groupRatioInfo := HandleGroupRatio(c, info)
+	c.Set("group_model_pricing_applied", false)
+	if name, rule, configured := groupModelPricingRule(info.UsingGroup, info.GetOriginModelName()); configured {
+		if _, err := billing_setting.ParseGroupModelPricingRule(rule); err != nil {
+			return hosttypes.PriceData{}, err
+		}
+		c.Set("group_model_pricing_applied", true)
+		info.BillingModelName = name
+		expression := rule.Expression
+		// User-specific image grids retain their per-image meaning, even when
+		// the group's default is a request price. Public grids are below group prices.
+		if _, image := info.Request.(*dto.ImageRequest); image && info.UserId > 0 {
+			prices, err := model.GetUserModelImageQualityPrices(info.UserId, info.GetOriginModelName())
+			if err != nil {
+				return hosttypes.PriceData{}, err
+			}
+			if len(prices) > 0 {
+				price, matched, err := resolveImageQualityPricing(c, info, meta)
+				if err != nil {
+					return hosttypes.PriceData{}, err
+				}
+				if matched {
+					expression = `tier("user_private", fixed(` + strconv.FormatFloat(price, 'g', -1, 64) + `)) * image_count`
+					return modelPriceHelperTieredExpression(c, info, name, promptTokens, groupRatioInfo, expression, true)
+				}
+			}
+		}
+		for index, userModelName := range []string{billingModelName, name} {
+			if index == 1 && name == billingModelName {
+				break
+			}
+			price, ok := model.GetUserModelPrice(info.UserId, userModelName)
+			if !ok {
+				continue
+			}
+			unit := rule.Unit
+			if expression, configured := billing_setting.GetBillingExpr(userModelName); configured {
+				if _, flatImage := billingexpr.ImageUnitPrice(expression, false); flatImage {
+					unit = "image"
+				}
+			}
+			if _, legacyPrice := ratio_setting.GetModelPrice(userModelName, false); legacyPrice {
+				unit = "request"
+				if _, image := info.Request.(*dto.ImageRequest); image {
+					unit = "image"
+				}
+			}
+			// A scalar user override cannot represent a pair of token prices.
+			if unit == "request" || unit == "image" {
+				expression = `tier("user_private", fixed(` + strconv.FormatFloat(price, 'g', -1, 64) + `))`
+				if unit == "image" {
+					expression += ` * image_count`
+				}
+				info.BillingModelName = userModelName
+				return modelPriceHelperTieredExpression(c, info, userModelName, promptTokens, groupRatioInfo, expression, true)
+			}
+		}
+		if rule.Unit == "second" {
+			return hosttypes.PriceData{}, fmt.Errorf("per-second group pricing requires a task usage meter")
+		}
+		return modelPriceHelperTieredExpression(c, info, name, promptTokens, groupRatioInfo, expression, true)
+	}
 	billingMode := billing_setting.GetBillingMode(billingModelName)
 
 	var modelPrice float64
@@ -191,8 +279,6 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 			}
 		}
 	}
-
-	groupRatioInfo := HandleGroupRatio(c, info)
 
 	// A new built-in expression must not displace an existing quality price.
 	// Explicit tiered pricing retains the precedence it had before the upgrade.
@@ -335,6 +421,25 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 // ModelPriceHelperPerCall 按次/按量计费的 PriceHelper (MJ、Task)
 func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hosttypes.PriceData, error) {
 	groupRatioInfo := HandleGroupRatio(c, info)
+	if name, rule, configured := groupModelPricingRule(info.UsingGroup, info.GetOriginModelName()); configured {
+		values, err := billing_setting.ParseGroupModelPricingRule(rule)
+		if err != nil {
+			return hosttypes.PriceData{}, err
+		}
+		if rule.Unit != "request" {
+			return hosttypes.PriceData{}, fmt.Errorf("group pricing unit %s requires a compatible usage meter", rule.Unit)
+		}
+		price := values.UnitPrice
+		if userPrice, ok := model.GetUserModelPrice(info.UserId, name); ok {
+			price = userPrice
+		}
+		quota, err := common.QuotaFromFloatStrict(price * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
+		if err != nil {
+			return hosttypes.PriceData{}, err
+		}
+		return hosttypes.PriceData{ModelPrice: price, UsePrice: true, Quota: quota, QuotaToPreConsume: quota,
+			FreeModel: !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume && (price == 0 || groupRatioInfo.GroupRatio == 0), GroupRatioInfo: groupRatioInfo}, nil
+	}
 
 	modelPrice, success := ratio_setting.GetModelPrice(info.OriginModelName, true)
 	usePrice := success
@@ -512,6 +617,10 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 			exprStr = `tier("user_private", fixed(` + strconv.FormatFloat(price, 'g', -1, 64) + `)) * image_count`
 		}
 	}
+	return modelPriceHelperTieredExpression(c, info, billingModelName, promptTokens, groupRatioInfo, exprStr, false)
+}
+
+func modelPriceHelperTieredExpression(c *gin.Context, info *relaycommon.RelayInfo, billingModelName string, promptTokens int, groupRatioInfo hosttypes.GroupRatioInfo, exprStr string, groupScoped bool) (hosttypes.PriceData, error) {
 	exprHash := billingexpr.ExprHashString(exprStr)
 	usedVars := billingexpr.UsedVarsByHash(exprStr, exprHash)
 	if usedVars["u"] {
@@ -519,7 +628,9 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 	}
 	fixedPricing := billingexpr.UsesFixedPricingByHash(exprStr, exprHash)
 	value, _ := c.Get(jsplugin.ContextKeyRelayEndpoint)
-	if endpoint, ok := value.(jsplugin.PinnedEndpoint); ok && !fixedPricing {
+	// A scoped token template is explicitly ordinary pricing; the task path
+	// rejects that unit rather than inheriting it as a USD usage expression.
+	if endpoint, ok := value.(jsplugin.PinnedEndpoint); ok && !fixedPricing && !groupScoped {
 		for _, candidate := range endpoint.Candidates {
 			pluginKey := candidate.Plugin.Meta.Key
 			if _, overridden := billing_setting.GetPluginBillingExpr(pluginKey, endpoint.Model); overridden {

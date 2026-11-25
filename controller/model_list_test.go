@@ -265,6 +265,32 @@ func TestGetUserModelsExpandsAutoGroupsInConfiguredOrder(t *testing.T) {
 	assert.Equal(t, "zz-default-model", models[2])
 }
 
+func TestListModelsIncludesOnlyRoutableGroupPricedModels(t *testing.T) {
+	withSelfUseModeDisabled(t)
+	before := config.GlobalConfig.ExportAllConfigs()["billing_setting.group_model_pricing"]
+	if before == "" {
+		before = "{}"
+	}
+	t.Cleanup(func() {
+		config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing": before})
+	})
+	config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing": `{"default":{"zz-group-price-only":{"unit":"request","expression":"tier(\"group_model\",fixed(0.02))","enabled":true}},"vip":{"zz-priced-other-group":{"unit":"request","expression":"tier(\"group_model\",fixed(0))","enabled":true}}}`})
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.Create(&model.User{Id: 1010, Username: "group-price-list-user", Password: "fixture", Group: "default", Status: common.UserStatusEnabled}).Error)
+	require.NoError(t, db.Create(&[]model.Ability{
+		{Group: "default", Model: "zz-group-price-only", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: "zz-priced-other-group", ChannelId: 1, Enabled: true},
+	}).Error)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	ctx.Set("id", 1010)
+	ListModels(ctx, constant.ChannelTypeOpenAI)
+	ids := decodeListModelsResponse(t, recorder)
+	assert.Contains(t, ids, "zz-group-price-only")
+	assert.NotContains(t, ids, "zz-priced-other-group", "a price in an unrelated group cannot make this group billable")
+}
+
 func TestListModelsIncludesTieredBillingModel(t *testing.T) {
 	withSelfUseModeDisabled(t)
 	withTieredBillingConfig(t, map[string]string{

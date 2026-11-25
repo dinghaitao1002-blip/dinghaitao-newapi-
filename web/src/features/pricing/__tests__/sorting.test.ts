@@ -18,8 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, test } from 'vitest'
 
-import { SORT_OPTIONS } from '../constants'
-import { sortModels } from '../lib/filters'
+import { FILTER_ALL, SORT_OPTIONS } from '../constants'
+import { filterAndSortModels, filterByGroup, sortModels } from '../lib/filters'
 import type { PricingModel } from '../types'
 
 function pricingModel(
@@ -66,6 +66,99 @@ const models = [
 ]
 
 describe('price sorting', () => {
+  test('keeps models serving all groups visible when a specific group is selected', () => {
+    const list = [
+      pricingModel('universal', { enable_groups: ['all'] }),
+      pricingModel('vip-only', { enable_groups: ['vip'] }),
+      pricingModel('default-only', { enable_groups: ['default'] }),
+    ]
+    expect(filterByGroup(list, 'vip').map((item) => item.model_name)).toEqual([
+      'universal',
+      'vip-only',
+    ])
+  })
+
+  test('sorts by selected group prices and preserves raw model data for details', () => {
+    const list = [
+      pricingModel('cheap-global', {
+        quota_type: 1,
+        model_price: 0.01,
+        enable_groups: ['default', 'vip'],
+        group_ratio: { default: 1, vip: 0.5 },
+        group_model_pricing: {
+          vip: {
+            unit: 'request',
+            expression: 'tier("group_model", fixed(0.2))',
+            enabled: true,
+          },
+        },
+      }),
+      pricingModel('cheap-vip', {
+        quota_type: 1,
+        model_price: 0.02,
+        enable_groups: ['default', 'vip'],
+        group_ratio: { default: 1, vip: 0.5 },
+        group_model_pricing: {
+          vip: {
+            unit: 'request',
+            expression: 'tier("group_model", fixed(0))',
+            enabled: true,
+          },
+        },
+      }),
+    ]
+    expect(
+      filterAndSortModels(list, {
+        search: '',
+        vendor: FILTER_ALL,
+        group: 'vip',
+        quotaType: FILTER_ALL,
+        endpointType: FILTER_ALL,
+        tag: FILTER_ALL,
+        sortBy: SORT_OPTIONS.REQUEST_PRICE_LOW,
+      })
+    ).toEqual([list[1], list[0]])
+    expect(sortModels(list, SORT_OPTIONS.REQUEST_PRICE_LOW, 'default')).toEqual(
+      list
+    )
+    expect(list[0].model_price).toBe(0.01)
+    expect(list[0].group_model_pricing?.vip.expression).toContain('fixed(0.2)')
+  })
+
+  test('sorts all-group summaries using each group price multiplied by its own ratio', () => {
+    const list = [
+      pricingModel('globally-cheaper', {
+        quota_type: 1,
+        model_price: 0.01,
+        enable_groups: ['default', 'vip'],
+        group_ratio: { default: 1, vip: 0.5 },
+        group_model_pricing: {
+          vip: {
+            unit: 'request',
+            expression: 'tier("group_model", fixed(0.02))',
+            enabled: true,
+          },
+        },
+      }),
+      pricingModel('vip-cheaper', {
+        quota_type: 1,
+        model_price: 0.02,
+        enable_groups: ['default', 'vip'],
+        group_ratio: { default: 1, vip: 0.5 },
+        group_model_pricing: {
+          vip: {
+            unit: 'request',
+            expression: 'tier("group_model", fixed(0.001))',
+            enabled: true,
+          },
+        },
+      }),
+    ]
+    expect(sortModels(list, SORT_OPTIONS.REQUEST_PRICE_LOW)).toEqual([
+      list[1],
+      list[0],
+    ])
+  })
   test.each([
     [
       SORT_OPTIONS.INPUT_PRICE_LOW,

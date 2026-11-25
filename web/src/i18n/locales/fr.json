@@ -7467,6 +7467,22 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Add model price": "Ajouter un prix de modèle",
+    "Billing unit": "Unité de facturation",
+    "Disabled or removed prices fall back to global pricing. Click “Save group settings” after applying the draft to make changes effective.": "Désactiver ou supprimer un prix rétablit le tarif global. Après application du brouillon, cliquez sur « Enregistrer les paramètres des groupes ».",
+    "Enable group price": "Activer le prix de groupe",
+    "Group model prices": "Prix des modèles par groupe",
+    "Group model prices contain invalid rules. Correct the JSON before editing model prices.": "Règles de prix invalides. Corrigez le JSON avant de modifier les prix.",
+    "Input price (USD / 1M tokens)": "Prix d’entrée (USD / 1M tokens)",
+    "Model price {{index}}": "Prix du modèle {{index}}",
+    "Model prices are configured separately within each group. Disabled or missing rules use global pricing.": "Les prix sont propres à chaque groupe. Les règles absentes ou désactivées utilisent les tarifs globaux.",
+    "Model prices for {{group}}": "Prix des modèles pour {{group}}",
+    "Models without an enabled group price use their global pricing.": "Sans prix de groupe actif, le tarif global s’applique.",
+    "No model prices in this group": "Aucun prix de modèle dans ce groupe",
+    "Output price (USD / 1M tokens)": "Prix de sortie (USD / 1M tokens)",
+    "Per second": "Par seconde",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Définissez un prix de base par modèle en USD. Le ratio effectif du groupe s’applique une fois. Les prix privés sont prioritaires.",
+    "This model already has a price in this group": "Ce modèle a déjà un prix dans ce groupe"
   }
 }

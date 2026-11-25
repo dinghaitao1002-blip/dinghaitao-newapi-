@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
-	"maps"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -40,30 +41,18 @@ func GetPricing(c *gin.Context) {
 	pricing := model.GetPricing()
 	userId, exists := c.Get("id")
 	usableGroup := map[string]string{}
-	groupRatio := map[string]float64{}
-	maps.Copy(groupRatio, ratio_setting.GetGroupRatioCopy())
 	var group string
 	if exists {
 		user, err := model.GetUserCache(userId.(int))
 		if err == nil {
 			group = user.Group
-			for g := range groupRatio {
-				ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
-				if ok {
-					groupRatio[g] = ratio
-				}
-			}
 		}
 	}
 
 	usableGroup = service.GetUserUsableGroups(group)
+	groupRatio := visibleGroupRatios(group, usableGroup)
 	pricing = filterPricingByUsableGroups(pricing, usableGroup)
-	// check groupRatio contains usableGroup
-	for group := range ratio_setting.GetGroupRatioCopy() {
-		if _, ok := usableGroup[group]; !ok {
-			delete(groupRatio, group)
-		}
-	}
+	pricing = withVisibleGroupModelPricing(pricing, usableGroup)
 
 	c.JSON(200, gin.H{
 		"success":            true,
@@ -75,6 +64,40 @@ func GetPricing(c *gin.Context) {
 		"auto_groups":        service.GetUserAutoGroup(group),
 		"pricing_version":    "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
+}
+
+func visibleGroupRatios(userGroup string, usableGroups map[string]string) map[string]float64 {
+	ratios := make(map[string]float64, len(usableGroups))
+	for group := range usableGroups {
+		ratio, special := ratio_setting.GetGroupGroupRatio(userGroup, group)
+		if !special {
+			ratio = ratio_setting.GetGroupRatio(group)
+		}
+		ratios[group] = ratio
+	}
+	return ratios
+}
+
+// Work on copies: the cached public catalog is shared by viewers with different
+// usable groups. Never attach one viewer's group prices to that cache.
+func withVisibleGroupModelPricing(pricing []model.Pricing, usableGroups map[string]string) []model.Pricing {
+	result := make([]model.Pricing, len(pricing))
+	copy(result, pricing)
+	for i := range result {
+		result[i].GroupModelPricing = nil
+		for group := range usableGroups {
+			if !common.StringsContains(result[i].EnableGroup, "all") && !common.StringsContains(result[i].EnableGroup, group) {
+				continue
+			}
+			if rule, ok := helper.GroupModelPricingRuleForModel(group, result[i].ModelName); ok {
+				if result[i].GroupModelPricing == nil {
+					result[i].GroupModelPricing = make(map[string]billing_setting.GroupModelPricingRule)
+				}
+				result[i].GroupModelPricing[group] = rule
+			}
+		}
+	}
+	return result
 }
 
 func ResetModelRatio(c *gin.Context) {

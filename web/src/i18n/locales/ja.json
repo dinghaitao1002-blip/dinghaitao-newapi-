@@ -7467,6 +7467,22 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Add model price": "モデル価格を追加",
+    "Billing unit": "課金単位",
+    "Disabled or removed prices fall back to global pricing. Click “Save group settings” after applying the draft to make changes effective.": "無効化または削除すると全体の価格に戻ります。下書きに適用後、「グループ設定を保存」をクリックしてください。",
+    "Enable group price": "グループ価格を有効にする",
+    "Group model prices": "グループ別モデル価格",
+    "Group model prices contain invalid rules. Correct the JSON before editing model prices.": "価格ルールが無効です。JSONを修正してから編集してください。",
+    "Input price (USD / 1M tokens)": "入力価格（USD / 100万トークン）",
+    "Model price {{index}}": "モデル価格 {{index}}",
+    "Model prices are configured separately within each group. Disabled or missing rules use global pricing.": "モデル価格はグループごとに設定できます。無効または未設定の場合、全体の価格を使用します。",
+    "Model prices for {{group}}": "{{group}} のモデル価格",
+    "Models without an enabled group price use their global pricing.": "グループ価格が無効または未設定の場合、全体の価格を使用します。",
+    "No model prices in this group": "このグループにモデル価格はありません",
+    "Output price (USD / 1M tokens)": "出力価格（USD / 100万トークン）",
+    "Per second": "秒ごと",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "モデルごとの基本価格を米ドルで設定します。グループ倍率を1回適用し、ユーザー専用価格を優先します。",
+    "This model already has a price in this group": "このグループでこのモデルの価格は設定済みです"
   }
 }

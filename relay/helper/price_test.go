@@ -71,6 +71,92 @@ func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {
 	require.Equal(t, common.QuotaPerUnit, info.TieredBillingSnapshot.QuotaPerUnit)
 }
 
+func TestGroupModelPricingReservesAndSettlesFrozenExpressions(t *testing.T) {
+	saved := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		saved[key] = value
+		return nil
+	}))
+	savedPrices := ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, config.GlobalConfig.LoadFromDB(saved))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
+	})
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"group-priced-model":0.8}`))
+	for _, tc := range []struct {
+		name, unit, expression string
+		requestImage           bool
+		actualImages           int64
+		usage                  *dto.Usage
+		claude                 bool
+		wantReserve, wantFinal int
+	}{
+		{name: "request price charges once", unit: "request", expression: `tier("group_model", fixed(0.03))`, wantReserve: 22500, wantFinal: 22500},
+		{name: "request price does not acquire an image multiplier", unit: "request", expression: `tier("group_model", fixed(0.03))`, requestImage: true, wantReserve: 22500, wantFinal: 22500},
+		{name: "image price settles actual payload count", unit: "image", expression: `tier("group_model", fixed(0.02)) * image_count`, requestImage: true, actualImages: 1, wantReserve: 30000, wantFinal: 15000},
+		{name: "token prices settle actual input and output", unit: "token", expression: `tier("group_model", p * 2 + c * 8)`, wantReserve: 1500, wantFinal: 3600},
+		{name: "token price includes OpenAI cache image and audio totals", unit: "token", expression: `tier("group_model", p * 2 + c * 8)`, wantReserve: 1500, wantFinal: 3600, usage: &dto.Usage{
+			PromptTokens: 2000, CompletionTokens: 100, TotalTokens: 2100,
+			PromptTokensDetails:    dto.InputTokenDetails{CachedTokens: 600, ImageTokens: 500, AudioTokens: 100},
+			CompletionTokenDetails: dto.OutputTokenDetails{ImageTokens: 20, AudioTokens: 40},
+		}},
+		{name: "token price adds independent Claude cache reads and writes", unit: "token", expression: `tier("group_model", p * 2 + c * 8)`, claude: true, wantReserve: 1500, wantFinal: 3600, usage: &dto.Usage{
+			PromptTokens: 1000, CompletionTokens: 100, UsageSemantic: "anthropic",
+			PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 600, CachedCreationTokens: 400},
+		}},
+		{name: "token price retains existing long Claude cache write weighting", unit: "token", expression: `tier("group_model", p * 2 + c * 8)`, claude: true, wantReserve: 1500, wantFinal: 3690, usage: &dto.Usage{
+			PromptTokens: 1000, CompletionTokens: 100, UsageSemantic: "anthropic",
+			PromptTokensDetails:         dto.InputTokenDetails{CachedTokens: 600, CachedCreationTokens: 400},
+			ClaudeCacheCreation5mTokens: 300, ClaudeCacheCreation1hTokens: 100,
+		}},
+		{name: "explicit zero does not fall back to public price", unit: "request", expression: `tier("group_model", fixed(0))`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rules, err := common.Marshal(map[string]map[string]billing_setting.GroupModelPricingRule{"selected": {
+				"group-priced-model": {Enabled: true, Unit: tc.unit, Expression: tc.expression},
+			}})
+			require.NoError(t, err)
+			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+				billing_setting.GroupModelPricingOption: string(rules),
+				"group_ratio_setting.group_ratio":       `{"selected":1.5}`,
+				"billing_setting.billing_mode":          `{}`,
+				"billing_setting.billing_expr":          `{}`,
+				"quota_setting.pre_consume_multiplier":  "1",
+			}))
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			ctx.Set("auto_group", "selected")
+			info := &relaycommon.RelayInfo{OriginModelName: "group-priced-model", UserGroup: "default", UsingGroup: "auto", BillingRequestInput: &billingexpr.RequestInput{}}
+			meta := &types.TokenCountMeta{}
+			if tc.requestImage {
+				info.Request = &dto.ImageRequest{Model: "group-priced-model", N: common.GetPointer(uint(2))}
+				meta = info.Request.GetTokenCountMeta()
+			}
+			price, err := ModelPriceHelper(ctx, info, 1000, meta)
+			require.NoError(t, err)
+			require.NotNil(t, info.TieredBillingSnapshot)
+			assert.Equal(t, "selected", info.UsingGroup)
+			assert.True(t, ctx.GetBool("group_model_pricing_applied"))
+			assert.Equal(t, tc.wantReserve, price.QuotaToPreConsume)
+			assert.Equal(t, 1.5, info.TieredBillingSnapshot.GroupRatio)
+			if tc.actualImages > 0 {
+				info.UpdateImageCount(tc.actualImages)
+			}
+			// Editing the scoped configuration does not reprice an in-flight request.
+			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{billing_setting.GroupModelPricingOption: `{}`}))
+			params := billingexpr.TokenParams{P: 2000, C: 100, Len: 2000}
+			if tc.usage != nil {
+				params = service.BuildTieredTokenParams(tc.usage, tc.claude, billingexpr.UsedVars(tc.expression))
+			}
+			used, quota, settled := service.TryTieredSettle(info, params)
+			require.True(t, used)
+			require.NotNil(t, settled)
+			assert.Equal(t, tc.wantFinal, quota)
+			assert.Equal(t, tc.expression, info.TieredBillingSnapshot.ExprString)
+		})
+	}
+}
+
 func TestFixedPricePreConsumeAndRealtimeRejection(t *testing.T) {
 	saved := map[string]string{}
 	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {

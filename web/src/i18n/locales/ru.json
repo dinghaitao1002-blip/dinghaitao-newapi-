@@ -7467,6 +7467,22 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Add model price": "Добавить цену модели",
+    "Billing unit": "Единица оплаты",
+    "Disabled or removed prices fall back to global pricing. Click “Save group settings” after applying the draft to make changes effective.": "Отключение или удаление возвращает общие цены. После применения черновика нажмите «Сохранить настройки групп».",
+    "Enable group price": "Включить групповую цену",
+    "Group model prices": "Цены моделей по группам",
+    "Group model prices contain invalid rules. Correct the JSON before editing model prices.": "Недействительные правила цен. Исправьте JSON перед редактированием.",
+    "Input price (USD / 1M tokens)": "Цена ввода (USD / 1 млн токенов)",
+    "Model price {{index}}": "Цена модели {{index}}",
+    "Model prices are configured separately within each group. Disabled or missing rules use global pricing.": "Цены задаются отдельно в каждой группе. При отсутствии или отключении правила применяются общие цены.",
+    "Model prices for {{group}}": "Цены моделей для {{group}}",
+    "Models without an enabled group price use their global pricing.": "Без включённой групповой цены используются общие цены.",
+    "No model prices in this group": "В этой группе нет цен моделей",
+    "Output price (USD / 1M tokens)": "Цена вывода (USD / 1 млн токенов)",
+    "Per second": "За секунду",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Задайте базовую цену каждой модели в USD. Коэффициент группы применяется один раз. Личные цены приоритетны.",
+    "This model already has a price in this group": "Цена модели уже задана в этой группе"
   }
 }

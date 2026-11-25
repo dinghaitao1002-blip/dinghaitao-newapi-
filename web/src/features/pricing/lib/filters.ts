@@ -31,7 +31,8 @@ import {
   hasTaskUsageSchema,
   isUnconfiguredTaskUsageModel,
 } from './dynamic-price'
-import { isTokenBasedModel } from './model-helpers'
+import { resolveDisplayGroupPricing } from './group-model-price'
+import { getDisplayGroupRatio, isTokenBasedModel } from './model-helpers'
 import { calculateTokenPrice } from './price'
 
 // ----------------------------------------------------------------------------
@@ -76,7 +77,9 @@ export function filterByGroup(
   group: string
 ): PricingModel[] {
   if (group === FILTER_ALL) return models
-  return models.filter((m) => m.enable_groups?.includes(group))
+  return models.filter(
+    (m) => m.enable_groups?.includes('all') || m.enable_groups?.includes(group)
+  )
 }
 
 /**
@@ -127,37 +130,46 @@ const PRICE_SORTS: Partial<
 }
 
 /**
- * Base USD price shown on the model card: input/output per 1M tokens, request
- * per call (task models use their first usage example). Undefined when the
- * model has no price of that kind.
+ * Scoped USD price shown on the model card: input/output per 1M tokens,
+ * request per call (task models use their first usage example). Undefined
+ * when the model has no price of that kind or its group units cannot compare.
  */
 function getSortPrice(
-  model: PricingModel,
-  kind: SortPriceKind
+  original: PricingModel,
+  kind: SortPriceKind,
+  selectedGroup?: string
 ): number | undefined {
+  const display = resolveDisplayGroupPricing(original, selectedGroup)
+  if (display.mixedGroupUnits) return undefined
+  const model = display.model
+  const ratio = getDisplayGroupRatio(model, display.selectedGroup)
   if (kind === 'request') {
     const example = getCardExamplePrice(model, { tokenUnit: 'M' })
-    if (example) return example.total
+    if (example) return example.total * ratio
   }
   const summary = getDynamicPricingSummary(model, { tokenUnit: 'M' })
   if (kind === 'request') {
     if (summary) {
-      return summary.entries.find(
+      const price = summary.entries.find(
         (entry) => entry.field === 'fixedPrice' || entry.field === 'modelPrice'
       )?.value
+      return price === undefined ? undefined : price * ratio
     }
-    return isTokenBasedModel(model) ? undefined : model.model_price
+    return isTokenBasedModel(model) || model.model_price === undefined
+      ? undefined
+      : model.model_price * ratio
   }
   if (summary) {
     const field = kind === 'input' ? 'inputPrice' : 'outputPrice'
-    return summary.entries.find(
+    const price = summary.entries.find(
       (entry) => entry.field === field && entry.unit === 'token'
     )?.value
+    return price === undefined ? undefined : price * ratio
   }
   if (!isTokenBasedModel(model) || isUnconfiguredTaskUsageModel(model)) {
     return undefined
   }
-  return calculateTokenPrice(model, kind, 1)
+  return calculateTokenPrice(model, kind, ratio)
 }
 
 /**
@@ -165,7 +177,8 @@ function getSortPrice(
  */
 export function sortModels(
   models: PricingModel[],
-  sortBy: string
+  sortBy: string,
+  selectedGroup?: string
 ): PricingModel[] {
   const sorted = [...models]
 
@@ -173,7 +186,7 @@ export function sortModels(
   if (priceSort) {
     // Extracting the price parses the billing expression, so compute once
     const price = new Map(
-      sorted.map((m) => [m, getSortPrice(m, priceSort.kind)])
+      sorted.map((m) => [m, getSortPrice(m, priceSort.kind, selectedGroup)])
     )
     // Models without this kind of price stay last in both directions
     sorted.sort((a, b) => {
@@ -219,7 +232,7 @@ export function filterAndSortModels(
   result = filterByQuotaType(result, filters.quotaType)
   result = filterByEndpointType(result, filters.endpointType)
   result = filterByTag(result, filters.tag)
-  result = sortModels(result, filters.sortBy)
+  result = sortModels(result, filters.sortBy, filters.group)
 
   return result
 }
@@ -250,7 +263,7 @@ export function extractAllTags(models: PricingModel[]): string[] {
     }
   })
 
-  return Array.from(tagSet).sort((a, b) => a.localeCompare(b))
+  return [...tagSet].sort((a, b) => a.localeCompare(b))
 }
 
 /**
