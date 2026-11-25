@@ -7483,6 +7483,19 @@
     "Output price (USD / 1M tokens)": "Prix de sortie (USD / 1M tokens)",
     "Per second": "Par seconde",
     "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Définissez un prix de base par modèle en USD. Le ratio effectif du groupe s’applique une fois. Les prix privés sont prioritaires.",
-    "This model already has a price in this group": "Ce modèle a déjà un prix dans ce groupe"
+    "This model already has a price in this group": "Ce modèle a déjà un prix dans ce groupe",
+    "Model concurrency for group {{group}}": "Concurrence des modèles du groupe {{group}}",
+    "Choose a model in this group, then set shared limits and individual user concurrency. Pricing is saved separately.": "Choisissez un modèle de ce groupe, puis définissez les limites partagées et par utilisateur. Les prix sont enregistrés séparément.",
+    "Limits apply only to requests using group {{group}}. Models without an enabled group rule use the global concurrency defaults.": "Ces limites concernent uniquement les requêtes utilisant le groupe {{group}}. Sans règle de groupe active, les limites globales sont utilisées.",
+    "Global rules are defaults for groups without an enabled model concurrency rule.": "Les règles globales servent de valeurs par défaut aux groupes sans règle de concurrence active.",
+    "Enable saved concurrency limits": "Activer les limites enregistrées",
+    "Enable all saved concurrency rules?": "Activer toutes les règles de concurrence enregistrées ?",
+    "This enables saved global and group concurrency rules after Save Changes. Existing limits are preserved.": "Après enregistrement, les règles globales et de groupe sauvegardées seront activées. Les limites existantes sont conservées.",
+    "Starting from the global limits for this model. Applying this draft creates a separate rule for this group.": "Les limites globales de ce modèle sont préremplies. Appliquer ce brouillon créera une règle propre à ce groupe.",
+    "Save new or renamed groups before configuring model concurrency. Renaming or deleting a group preserves concurrency rules under the original name.": "Enregistrez les groupes créés ou renommés avant de configurer la concurrence. Renommer ou supprimer un groupe conserve les règles sous leur ancien nom.",
+    "User concurrency for {{model}}": "Concurrence par utilisateur pour {{model}}",
+    "User concurrency": "Concurrence par utilisateur",
+    "Model total concurrency in this group": "Concurrence totale du modèle dans ce groupe",
+    "Manage group model limits in Group pricing under system settings.": "Gérez les limites des modèles par groupe dans la tarification des groupes des paramètres système."
   }
 }

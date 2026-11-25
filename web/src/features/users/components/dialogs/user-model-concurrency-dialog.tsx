@@ -16,51 +16,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
-
-import { Dialog } from '@/components/dialog'
-import { SettingsPageProvider } from '@/features/system-settings/components/settings-page-context'
 import type { ConcurrencyFocusedUser } from '@/features/system-settings/concurrency-limits/api'
-import { ModelConcurrencySection } from '@/features/system-settings/concurrency-limits/model-concurrency-section'
-import { ROLE } from '@/lib/roles'
-import { useAuthStore } from '@/stores/auth-store'
+import { ModelConcurrencyDialog } from '@/features/system-settings/concurrency-limits/model-concurrency-dialog'
 
 export function UserModelConcurrencyDialog(props: {
   user: ConcurrencyFocusedUser | null
   onOpenChange: (open: boolean) => void
 }) {
-  const { t } = useTranslation()
-  const [actionsContainer, setActionsContainer] =
-    useState<HTMLDivElement | null>(null)
-  const canManage = useAuthStore(
-    (state) => state.auth.user?.role === ROLE.SUPER_ADMIN
-  )
-  if (!canManage) return null
   return (
-    <Dialog
-      open
+    <ModelConcurrencyDialog
+      focusedUser={props.user ?? undefined}
       onOpenChange={props.onOpenChange}
-      title={t('Model concurrency')}
-      description={
-        props.user
-          ? t('Set model concurrency for {{username}} (#{{id}}).', {
-              username: props.user.username,
-              id: String(props.user.id),
-            })
-          : t('Manage shared model limits and user overrides.')
-      }
-      descriptionClassName='break-words'
-      contentClassName='sm:max-w-5xl'
-      contentHeight='min(65vh, 720px)'
-      footer={<div ref={setActionsContainer} />}
-    >
-      <SettingsPageProvider actionsContainer={actionsContainer}>
-        <ModelConcurrencySection
-          key={props.user?.id ?? 'global'}
-          focusedUser={props.user ?? undefined}
-        />
-      </SettingsPageProvider>
-    </Dialog>
+    />
   )
 }

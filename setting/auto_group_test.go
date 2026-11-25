@@ -59,3 +59,30 @@ func TestUpdateMaxTokenAutoGroupsRejectsInvalidValuesWithoutChangingState(t *tes
 		})
 	}
 }
+
+func TestResolveModelConcurrencyRulePrefersGroupBeforeGlobalAliases(t *testing.T) {
+	const base = "gemini-3-pro-image-preview"
+	config := common.ModelConcurrencyConfig{Enabled: true, Rules: []common.ModelConcurrencyRule{
+		{Model: base, Enabled: true, MaxConcurrent: 10},
+		{Model: base + "@temperature:0.2", Enabled: true, MaxConcurrent: 20},
+		{Group: "vip", Model: base, Enabled: true, MaxConcurrent: 3},
+		{Group: "vip", Model: base + "@temperature:0.2", Enabled: true, MaxConcurrent: 4},
+	}}
+	for _, tc := range []struct {
+		group, raw string
+		index      int
+	}{
+		{"vip", base, 2}, {"vip", base + "@temperature:0.8", 2}, {"vip", base + "@temperature:0.2", 3},
+		{"standard", base, 0}, {"standard", base + "@temperature:0.2", 1},
+	} {
+		rule, ok := ResolveModelConcurrencyRule(config, tc.raw, tc.group)
+		require.True(t, ok)
+		assert.Equal(t, config.Rules[tc.index], rule)
+	}
+	config.Rules[2].Enabled = false
+	config.Rules[3].Enabled = false
+	rule, ok := ResolveModelConcurrencyRule(config, base, "vip")
+	require.True(t, ok)
+	assert.Equal(t, "", rule.Group)
+	assert.Equal(t, 10, rule.MaxConcurrent)
+}

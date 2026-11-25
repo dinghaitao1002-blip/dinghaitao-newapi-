@@ -25,6 +25,7 @@ const concurrencyLimitSchema = z
   .max(1000000, 'Enter a whole number from 0 to 1,000,000')
 
 export const modelConcurrencyRuleSchema = z.object({
+  group: z.string().optional(),
   model: z
     .string()
     .trim()

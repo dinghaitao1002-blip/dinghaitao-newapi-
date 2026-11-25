@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
@@ -28,6 +29,23 @@ func BeginModelConcurrency(c *gin.Context, model string) (func(), bool) {
 	}
 	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"type": "rate_limit_error", "code": code, "message": message}})
 	return nil, false
+}
+
+// RebindModelConcurrency applies the destination group's limit after channel
+// selection, including retries and connection reuse, before upstream work.
+func RebindModelConcurrency(c *gin.Context, model string) *types.NewAPIError {
+	if err := service.RebindModelConcurrency(c, model); err != nil {
+		status, code := http.StatusServiceUnavailable, "model_concurrency_unavailable"
+		message := i18n.T(c, "model_concurrency.unavailable")
+		var limit *common.ModelConcurrencyLimitError
+		if errors.As(err, &limit) {
+			status, code = http.StatusTooManyRequests, "model_concurrency_exceeded"
+			message = i18n.T(c, "model_concurrency.exceeded", map[string]any{"Model": model, "Limit": limit.Limit, "Current": limit.Current})
+			c.Header("Retry-After", "1")
+		}
+		return types.NewErrorWithStatusCode(errors.New(message), types.ErrorCode(code), status, types.ErrOptionWithSkipRetry())
+	}
+	return nil
 }
 
 func isDeferredImageAdmission(c *gin.Context) bool {

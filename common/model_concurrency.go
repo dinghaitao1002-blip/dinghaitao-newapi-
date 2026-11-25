@@ -29,6 +29,7 @@ type ModelConcurrencyUserLimit struct {
 }
 
 type ModelConcurrencyRule struct {
+	Group            string                      `json:"group,omitempty"`
 	Model            string                      `json:"model"`
 	Enabled          bool                        `json:"enabled"`
 	MaxConcurrent    int                         `json:"max_concurrent"`
@@ -42,19 +43,27 @@ type ModelConcurrencyConfig struct {
 	Rules   []ModelConcurrencyRule `json:"rules"`
 }
 
+func (config ModelConcurrencyConfig) HasEnabledRules() bool {
+	return config.Enabled && slices.ContainsFunc(config.Rules, func(rule ModelConcurrencyRule) bool { return rule.Enabled })
+}
+
 func (config ModelConcurrencyConfig) Validate() error {
 	if len(config.Rules) > 1000 {
 		return errors.New("at most 1000 model concurrency rules are allowed")
 	}
-	models := make(map[string]bool, len(config.Rules))
+	models := make(map[modelConcurrencyBucket]bool, len(config.Rules))
 	for _, rule := range config.Rules {
+		if strings.TrimSpace(rule.Group) != rule.Group || len(rule.Group) > 256 {
+			return errors.New("group must have no surrounding whitespace and be at most 256 bytes")
+		}
 		if rule.Model == "" || strings.TrimSpace(rule.Model) != rule.Model || len(rule.Model) > 256 {
 			return errors.New("model must be a non-empty name without surrounding whitespace, at most 256 bytes")
 		}
-		if models[rule.Model] {
+		bucket := modelConcurrencyBucket{Group: rule.Group, Model: rule.Model}
+		if models[bucket] {
 			return fmt.Errorf("duplicate model concurrency rule: %s", rule.Model)
 		}
-		models[rule.Model] = true
+		models[bucket] = true
 		for _, limit := range []int{rule.MaxConcurrent, rule.DefaultUserLimit, rule.OtherUsersLimit} {
 			if limit < 0 || limit > 1000000 {
 				return errors.New("concurrency limits must be integers between 0 and 1000000")
@@ -104,7 +113,7 @@ func ParseModelConcurrencyConfig(raw string) (ModelConcurrencyConfig, error) {
 	}
 	for _, rule := range rules {
 		for key := range rule {
-			if !slices.Contains([]string{"model", "enabled", "max_concurrent", "default_user_limit", "other_users_limit", "user_limits"}, key) {
+			if !slices.Contains([]string{"group", "model", "enabled", "max_concurrent", "default_user_limit", "other_users_limit", "user_limits"}, key) {
 				return config, fmt.Errorf("unknown model concurrency field: %s", key)
 			}
 			if key != "user_limits" && strings.TrimSpace(string(rule[key])) == "null" {
@@ -137,10 +146,14 @@ func ParseModelConcurrencyConfig(raw string) (ModelConcurrencyConfig, error) {
 	return config, config.Validate()
 }
 
-func (config ModelConcurrencyConfig) Rule(model string) (ModelConcurrencyRule, bool) {
+func (config ModelConcurrencyConfig) Rule(model string, groups ...string) (ModelConcurrencyRule, bool) {
+	group := ""
+	if len(groups) > 0 {
+		group = groups[0]
+	}
 	if config.Enabled {
 		for _, rule := range config.Rules {
-			if rule.Enabled && rule.Model == model {
+			if rule.Enabled && rule.Model == model && rule.Group == group {
 				return rule, true
 			}
 		}
@@ -166,6 +179,7 @@ func (err *ModelConcurrencyLimitError) Error() string {
 func (err *ModelConcurrencyLimitError) Unwrap() error { return ErrModelConcurrencyExceeded }
 
 type ModelConcurrencyLeaseIdentity struct {
+	Group      string `json:"group,omitempty"`
 	ID         string `json:"id"`
 	Model      string `json:"model"`
 	UserID     int    `json:"user_id"`
@@ -179,6 +193,7 @@ type ModelConcurrencyUserUsage struct {
 }
 
 type ModelConcurrencyUsage struct {
+	Group      string                      `json:"group,omitempty"`
 	Model      string                      `json:"model"`
 	Total      int                         `json:"total"`
 	OtherUsers int                         `json:"other_users"`
@@ -190,6 +205,15 @@ type modelConcurrencyMemoryLease struct {
 	expires time.Time
 }
 
+type modelConcurrencyBucket struct {
+	Group string
+	Model string
+}
+
+func (identity ModelConcurrencyLeaseIdentity) bucket() modelConcurrencyBucket {
+	return modelConcurrencyBucket{Group: identity.Group, Model: identity.Model}
+}
+
 // The Redis backend uses one model lease set and one per-user count hash in
 // the same hash slot. Admission checks all three scopes in one Lua execution.
 // "Other users" is computed from the CURRENT override set, so editing which
@@ -199,14 +223,14 @@ type ModelConcurrencyLimiter struct {
 	ttl    time.Duration
 	now    func() time.Time
 	mu     sync.Mutex
-	memory map[string]map[string]modelConcurrencyMemoryLease
+	memory map[modelConcurrencyBucket]map[string]modelConcurrencyMemoryLease
 }
 
 func NewModelConcurrencyLimiter(client *redis.Client, ttl time.Duration) *ModelConcurrencyLimiter {
 	if ttl <= 0 {
 		ttl = ModelConcurrencyLeaseTTL
 	}
-	return &ModelConcurrencyLimiter{redis: client, ttl: ttl, now: time.Now, memory: make(map[string]map[string]modelConcurrencyMemoryLease)}
+	return &ModelConcurrencyLimiter{redis: client, ttl: ttl, now: time.Now, memory: make(map[modelConcurrencyBucket]map[string]modelConcurrencyMemoryLease)}
 }
 
 var modelConcurrencyMemory = NewModelConcurrencyLimiter(nil, ModelConcurrencyLeaseTTL)
@@ -230,7 +254,7 @@ func AcquireModelConcurrency(ctx context.Context, model string, userID int, rule
 
 func RestoreModelConcurrencyLease(identity ModelConcurrencyLeaseIdentity) (*ModelConcurrencyLease, error) {
 	_, uuidErr := uuid.Parse(identity.ID)
-	if (uuidErr != nil && !durableModelConcurrencyID.MatchString(identity.ID)) || identity.UserID <= 0 || identity.Model == "" || len(identity.Model) > 256 {
+	if (uuidErr != nil && !durableModelConcurrencyID.MatchString(identity.ID)) || identity.UserID <= 0 || identity.Model == "" || len(identity.Model) > 256 || len(identity.Group) > 256 || strings.TrimSpace(identity.Group) != identity.Group {
 		return nil, errors.New("invalid concurrency lease identity")
 	}
 	limiter := modelConcurrencyMemory
@@ -280,13 +304,27 @@ func (lease *ModelConcurrencyLease) Identity() ModelConcurrencyLeaseIdentity {
 
 const modelConcurrencyDurableScore = int64(9007199254740991)
 const modelConcurrencyDurableModelsKey = "model-concurrency:v1:{model-concurrency}:durable-models"
+const modelConcurrencyDurableGroupsKey = "model-concurrency:v2:{model-concurrency}:durable-groups"
 
 var durableModelConcurrencyID = regexp.MustCompile(`^(task|image):[a-zA-Z0-9_-]{1,128}$`)
 
-func (limiter *ModelConcurrencyLimiter) keys(model string) []string {
+func (limiter *ModelConcurrencyLimiter) keys(model string, groups ...string) []string {
 	hash := sha256.Sum256([]byte(model))
 	prefix := fmt.Sprintf("model-concurrency:v1:{model-concurrency}:%x:", hash)
+	if len(groups) > 0 && groups[0] != "" {
+		encoded, _ := Marshal([2]string{groups[0], model})
+		hash = sha256.Sum256(encoded)
+		prefix = fmt.Sprintf("model-concurrency:v2:{model-concurrency}:%x:", hash)
+	}
 	return []string{prefix + "leases", prefix + "users"}
+}
+
+func (bucket modelConcurrencyBucket) durableRegistry() (string, string) {
+	if bucket.Group == "" {
+		return modelConcurrencyDurableModelsKey, bucket.Model
+	}
+	encoded, _ := Marshal([2]string{bucket.Group, bucket.Model})
+	return modelConcurrencyDurableGroupsKey, string(encoded)
 }
 
 // Every operation prunes expired leases and adjusts the corresponding user
@@ -366,7 +404,7 @@ func (limiter *ModelConcurrencyLimiter) Acquire(ctx context.Context, model strin
 	if err := (ModelConcurrencyConfig{Rules: []ModelConcurrencyRule{rule}}).Validate(); err != nil {
 		return nil, err
 	}
-	identity := ModelConcurrencyLeaseIdentity{ID: uuid.NewString(), Model: model, UserID: userID, Storage: "memory"}
+	identity := ModelConcurrencyLeaseIdentity{ID: uuid.NewString(), Model: model, Group: rule.Group, UserID: userID, Storage: "memory"}
 	userLimit, other := rule.DefaultUserLimit, true
 	for _, user := range rule.UserLimits {
 		if user.UserID == userID {
@@ -384,7 +422,7 @@ func (limiter *ModelConcurrencyLimiter) Acquire(ctx context.Context, model strin
 		}
 		operationCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		result, err := modelConcurrencyAcquireScript.Run(operationCtx, limiter.redis, limiter.keys(model), args...).Slice()
+		result, err := modelConcurrencyAcquireScript.Run(operationCtx, limiter.redis, limiter.keys(model, rule.Group), args...).Slice()
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrModelConcurrencyUnavailable, err)
 		}
@@ -397,7 +435,7 @@ func (limiter *ModelConcurrencyLimiter) Acquire(ctx context.Context, model strin
 		}
 		limiter.mu.Lock()
 		defer limiter.mu.Unlock()
-		users := limiter.memoryUsage(model)
+		users := limiter.memoryUsage(identity.bucket())
 		counts := []int{0, users[userID], 0}
 		for uid, count := range users {
 			counts[0] += count
@@ -410,27 +448,27 @@ func (limiter *ModelConcurrencyLimiter) Acquire(ctx context.Context, model strin
 				return nil, &ModelConcurrencyLimitError{Scope: []string{"model", "user", "other_users"}[i], Current: counts[i], Limit: limit}
 			}
 		}
-		if limiter.memory[model] == nil {
-			limiter.memory[model] = make(map[string]modelConcurrencyMemoryLease)
+		if limiter.memory[identity.bucket()] == nil {
+			limiter.memory[identity.bucket()] = make(map[string]modelConcurrencyMemoryLease)
 		}
-		limiter.memory[model][identity.ID] = modelConcurrencyMemoryLease{userID: userID, expires: limiter.now().Add(limiter.ttl)}
+		limiter.memory[identity.bucket()][identity.ID] = modelConcurrencyMemoryLease{userID: userID, expires: limiter.now().Add(limiter.ttl)}
 	}
 	return &ModelConcurrencyLease{limiter: limiter, identity: identity}, nil
 }
 
 // memoryUsage is called with mu held and preserves active identities when the
 // limits are changed, disabled, or re-enabled.
-func (limiter *ModelConcurrencyLimiter) memoryUsage(model string) map[int]int {
+func (limiter *ModelConcurrencyLimiter) memoryUsage(bucket modelConcurrencyBucket) map[int]int {
 	users := make(map[int]int)
-	for id, lease := range limiter.memory[model] {
+	for id, lease := range limiter.memory[bucket] {
 		if !lease.expires.IsZero() && !limiter.now().Before(lease.expires) {
-			delete(limiter.memory[model], id)
+			delete(limiter.memory[bucket], id)
 		} else {
 			users[lease.userID]++
 		}
 	}
-	if len(limiter.memory[model]) == 0 {
-		delete(limiter.memory, model)
+	if len(limiter.memory[bucket]) == 0 {
+		delete(limiter.memory, bucket)
 	}
 	return users
 }
@@ -445,7 +483,7 @@ func (lease *ModelConcurrencyLease) Renew(ctx context.Context) error {
 	if limiter.redis != nil {
 		operationCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		result, err := modelConcurrencyRenewScript.Run(operationCtx, limiter.redis, limiter.keys(identity.Model), strconv.Itoa(identity.UserID)+":"+identity.ID, identity.UserID, limiter.ttl.Milliseconds()).Int()
+		result, err := modelConcurrencyRenewScript.Run(operationCtx, limiter.redis, limiter.keys(identity.Model, identity.Group), strconv.Itoa(identity.UserID)+":"+identity.ID, identity.UserID, limiter.ttl.Milliseconds()).Int()
 		if err != nil {
 			return fmt.Errorf("%w: %v", ErrModelConcurrencyUnavailable, err)
 		}
@@ -456,15 +494,15 @@ func (lease *ModelConcurrencyLease) Renew(ctx context.Context) error {
 	}
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
-	limiter.memoryUsage(identity.Model)
-	record, ok := limiter.memory[identity.Model][identity.ID]
+	limiter.memoryUsage(identity.bucket())
+	record, ok := limiter.memory[identity.bucket()][identity.ID]
 	if !ok {
 		return ErrModelConcurrencyLeaseExpired
 	}
 	if !record.expires.IsZero() {
 		record.expires = limiter.now().Add(limiter.ttl)
 	}
-	limiter.memory[identity.Model][identity.ID] = record
+	limiter.memory[identity.bucket()][identity.ID] = record
 	return nil
 }
 
@@ -478,15 +516,15 @@ func (lease *ModelConcurrencyLease) Release(ctx context.Context) error {
 	if limiter.redis != nil {
 		operationCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		if err := modelConcurrencyReleaseScript.Run(operationCtx, limiter.redis, limiter.keys(identity.Model), strconv.Itoa(identity.UserID)+":"+identity.ID, identity.UserID).Err(); err != nil {
+		if err := modelConcurrencyReleaseScript.Run(operationCtx, limiter.redis, limiter.keys(identity.Model, identity.Group), strconv.Itoa(identity.UserID)+":"+identity.ID, identity.UserID).Err(); err != nil {
 			return fmt.Errorf("%w: %v", ErrModelConcurrencyUnavailable, err)
 		}
 		return nil
 	}
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
-	delete(limiter.memory[identity.Model], identity.ID)
-	limiter.memoryUsage(identity.Model)
+	delete(limiter.memory[identity.bucket()], identity.ID)
+	limiter.memoryUsage(identity.bucket())
 	return nil
 }
 
@@ -495,7 +533,7 @@ func (limiter *ModelConcurrencyLimiter) Usage(ctx context.Context, rule ModelCon
 	if limiter.redis != nil {
 		operationCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		values, err := modelConcurrencyUsageScript.Run(operationCtx, limiter.redis, limiter.keys(rule.Model)).StringSlice()
+		values, err := modelConcurrencyUsageScript.Run(operationCtx, limiter.redis, limiter.keys(rule.Model, rule.Group)).StringSlice()
 		if err != nil {
 			return ModelConcurrencyUsage{}, fmt.Errorf("%w: %v", ErrModelConcurrencyUnavailable, err)
 		}
@@ -509,10 +547,10 @@ func (limiter *ModelConcurrencyLimiter) Usage(ctx context.Context, rule ModelCon
 		}
 	} else {
 		limiter.mu.Lock()
-		users = limiter.memoryUsage(rule.Model)
+		users = limiter.memoryUsage(modelConcurrencyBucket{Group: rule.Group, Model: rule.Model})
 		limiter.mu.Unlock()
 	}
-	usage := ModelConcurrencyUsage{Model: rule.Model, Users: []ModelConcurrencyUserUsage{}}
+	usage := ModelConcurrencyUsage{Model: rule.Model, Group: rule.Group, Users: []ModelConcurrencyUserUsage{}}
 	for uid, count := range users {
 		usage.Total += count
 		if !slices.ContainsFunc(rule.UserLimits, func(user ModelConcurrencyUserLimit) bool { return user.UserID == uid }) {
@@ -552,10 +590,11 @@ func (lease *ModelConcurrencyLease) Transfer(ctx context.Context, taskID string)
 	if limiter.redis != nil {
 		operationCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		keys := append(limiter.keys(identity.Model), modelConcurrencyDurableModelsKey)
+		registry, bucket := identity.bucket().durableRegistry()
+		keys := append(limiter.keys(identity.Model, identity.Group), registry)
 		oldMember := strconv.Itoa(identity.UserID) + ":" + identity.ID
 		newMember := strconv.Itoa(identity.UserID) + ":" + taskID
-		result, err := modelConcurrencyTransferScript.Run(operationCtx, limiter.redis, keys, oldMember, newMember, identity.UserID, identity.Model).Int()
+		result, err := modelConcurrencyTransferScript.Run(operationCtx, limiter.redis, keys, oldMember, newMember, identity.UserID, bucket).Int()
 		if err != nil {
 			return fmt.Errorf("%w: %v", ErrModelConcurrencyUnavailable, err)
 		}
@@ -565,16 +604,16 @@ func (lease *ModelConcurrencyLease) Transfer(ctx context.Context, taskID string)
 	} else {
 		limiter.mu.Lock()
 		defer limiter.mu.Unlock()
-		limiter.memoryUsage(identity.Model)
-		record, ok := limiter.memory[identity.Model][identity.ID]
+		limiter.memoryUsage(identity.bucket())
+		record, ok := limiter.memory[identity.bucket()][identity.ID]
 		if !ok {
-			if _, exists := limiter.memory[identity.Model][taskID]; !exists {
+			if _, exists := limiter.memory[identity.bucket()][taskID]; !exists {
 				return ErrModelConcurrencyLeaseExpired
 			}
 		} else {
-			delete(limiter.memory[identity.Model], identity.ID)
+			delete(limiter.memory[identity.bucket()], identity.ID)
 			record.expires = time.Time{}
-			limiter.memory[identity.Model][taskID] = record
+			limiter.memory[identity.bucket()][taskID] = record
 		}
 	}
 	lease.identity.ID, lease.identity.Persistent = taskID, true
@@ -617,18 +656,19 @@ func RecoverModelConcurrencyLease(ctx context.Context, identity ModelConcurrency
 	if limiter.redis != nil {
 		operationCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		keys := append(limiter.keys(identity.Model), modelConcurrencyDurableModelsKey)
+		registry, bucket := identity.bucket().durableRegistry()
+		keys := append(limiter.keys(identity.Model, identity.Group), registry)
 		member := strconv.Itoa(identity.UserID) + ":" + identity.ID
-		if err := modelConcurrencyRecoverScript.Run(operationCtx, limiter.redis, keys, member, identity.UserID, identity.Model).Err(); err != nil {
+		if err := modelConcurrencyRecoverScript.Run(operationCtx, limiter.redis, keys, member, identity.UserID, bucket).Err(); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrModelConcurrencyUnavailable, err)
 		}
 	} else {
 		limiter.mu.Lock()
 		defer limiter.mu.Unlock()
-		if limiter.memory[identity.Model] == nil {
-			limiter.memory[identity.Model] = make(map[string]modelConcurrencyMemoryLease)
+		if limiter.memory[identity.bucket()] == nil {
+			limiter.memory[identity.bucket()] = make(map[string]modelConcurrencyMemoryLease)
 		}
-		limiter.memory[identity.Model][identity.ID] = modelConcurrencyMemoryLease{userID: identity.UserID}
+		limiter.memory[identity.bucket()][identity.ID] = modelConcurrencyMemoryLease{userID: identity.UserID}
 	}
 	return lease, nil
 }
@@ -641,11 +681,11 @@ func ListDurableModelConcurrencyLeases(ctx context.Context) ([]ModelConcurrencyL
 	if !RedisEnabled {
 		modelConcurrencyMemory.mu.Lock()
 		defer modelConcurrencyMemory.mu.Unlock()
-		for model, active := range modelConcurrencyMemory.memory {
-			modelConcurrencyMemory.memoryUsage(model)
+		for bucket, active := range modelConcurrencyMemory.memory {
+			modelConcurrencyMemory.memoryUsage(bucket)
 			for id, record := range active {
 				if record.expires.IsZero() {
-					leases = append(leases, ModelConcurrencyLeaseIdentity{ID: id, Model: model, UserID: record.userID, Storage: "memory", Persistent: true})
+					leases = append(leases, ModelConcurrencyLeaseIdentity{ID: id, Model: bucket.Model, Group: bucket.Group, UserID: record.userID, Storage: "memory", Persistent: true})
 				}
 			}
 		}
@@ -656,23 +696,33 @@ func ListDurableModelConcurrencyLeases(ctx context.Context) ([]ModelConcurrencyL
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	models, err := RDB.SMembers(operationCtx, modelConcurrencyDurableModelsKey).Result()
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrModelConcurrencyUnavailable, err)
-	}
 	limiter := NewModelConcurrencyLimiter(RDB, ModelConcurrencyLeaseTTL)
-	for _, model := range models {
-		members, err := modelConcurrencyListDurableScript.Run(operationCtx, RDB, []string{limiter.keys(model)[0], modelConcurrencyDurableModelsKey}, model, modelConcurrencyDurableScore).StringSlice()
+	for _, registry := range []string{modelConcurrencyDurableModelsKey, modelConcurrencyDurableGroupsKey} {
+		buckets, err := RDB.SMembers(operationCtx, registry).Result()
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrModelConcurrencyUnavailable, err)
 		}
-		for _, member := range members {
-			user, id, ok := strings.Cut(member, ":")
-			uid, err := strconv.Atoi(user)
-			if !ok || err != nil || uid <= 0 || !durableModelConcurrencyID.MatchString(id) {
-				return nil, ErrModelConcurrencyUnavailable
+		for _, value := range buckets {
+			bucket := modelConcurrencyBucket{Model: value}
+			if registry == modelConcurrencyDurableGroupsKey {
+				var pair [2]string
+				if err := UnmarshalJsonStr(value, &pair); err != nil || pair[0] == "" || pair[1] == "" {
+					return nil, ErrModelConcurrencyUnavailable
+				}
+				bucket.Group, bucket.Model = pair[0], pair[1]
 			}
-			leases = append(leases, ModelConcurrencyLeaseIdentity{ID: id, Model: model, UserID: uid, Storage: "redis", Persistent: true})
+			members, err := modelConcurrencyListDurableScript.Run(operationCtx, RDB, []string{limiter.keys(bucket.Model, bucket.Group)[0], registry}, value, modelConcurrencyDurableScore).StringSlice()
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrModelConcurrencyUnavailable, err)
+			}
+			for _, member := range members {
+				user, id, ok := strings.Cut(member, ":")
+				uid, err := strconv.Atoi(user)
+				if !ok || err != nil || uid <= 0 || !durableModelConcurrencyID.MatchString(id) {
+					return nil, ErrModelConcurrencyUnavailable
+				}
+				leases = append(leases, ModelConcurrencyLeaseIdentity{ID: id, Model: bucket.Model, Group: bucket.Group, UserID: uid, Storage: "redis", Persistent: true})
+			}
 		}
 	}
 	return leases, nil

@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
@@ -690,4 +691,51 @@ func TestResponsesWSErrorAttribution(t *testing.T) {
 			assert.Equal(t, tc.controlError, controlError)
 		})
 	}
+}
+
+func TestResponsesWSLockedConnectionReadmitsSelectedGroup(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	db := setupRelayChannelDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Ability{}, &model.Task{}, &model.ImageAsyncTask{}))
+	previous := setting.ModelConcurrencyConfig2JSONString()
+	previousRedis, previousRDB := common.RedisEnabled, common.RDB
+	common.RedisEnabled, common.RDB = false, nil
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(`{"enabled":true,"rules":[{"group":"default","model":"ws-locked-group-model","enabled":true,"max_concurrent":1}]}`))
+	t.Cleanup(func() {
+		common.RedisEnabled, common.RDB = previousRedis, previousRDB
+		require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(previous))
+	})
+	channel := &model.Channel{Name: "group-reuse", Key: "locked-group-key", Status: common.ChannelStatusEnabled, Type: constant.ChannelTypeOpenAI, Group: "default", Models: "ws-locked-group-model"}
+	channel.SetSetting(dto.ChannelSettings{ResponsesWebSocketEnabled: true})
+	require.NoError(t, db.Create(channel).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: "ws-locked-group-model", ChannelId: channel.Id, Enabled: true}).Error)
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		require.NoError(t, db.Where("channel_id = ?", channel.Id).Delete(&model.Ability{}).Error)
+		require.NoError(t, db.Where("id = ?", channel.Id).Delete(&model.Channel{}).Error)
+		model.InitChannelCache()
+		common.MemoryCacheEnabled = false
+	})
+	model.InitChannelCache()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set("id", 8812)
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "auto")
+	common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(c, constant.ContextKeyTokenAutoGroups, []string{"default"})
+	finish, err := service.BeginModelConcurrency(c, "ws-locked-group-model")
+	require.NoError(t, err)
+	defer finish()
+	held, err := common.AcquireModelConcurrency(context.Background(), "ws-locked-group-model", 8813, setting.GetModelConcurrencyConfig().Rules[0])
+	require.NoError(t, err)
+	defer func() { require.NoError(t, held.Release(context.Background())) }()
+	session := &responsesWSSession{lockedChannelID: channel.Id, lockedModel: "ws-locked-group-model", lockedGroup: "default", lockedKey: channel.Key,
+		lockedContext: map[constant.ContextKey]any{constant.ContextKeyChannelBaseUrl: channel.GetBaseURL(), constant.ContextKeyChannelHeaderOverride: channel.GetHeaderOverride()}}
+	apiErr := session.runCall(c, &responsesWSCallState{}, responsesWSCreateRequest{Request: dto.OpenAIResponsesRequest{Model: "ws-locked-group-model"}})
+	require.NotNil(t, apiErr)
+	assert.Equal(t, http.StatusTooManyRequests, apiErr.StatusCode)
+	assert.Equal(t, types.ErrorCode("model_concurrency_exceeded"), apiErr.ToOpenAIError().Code)
+	usage, err := common.GetModelConcurrencyUsage(context.Background(), setting.GetModelConcurrencyConfig().Rules)
+	require.NoError(t, err)
+	assert.Equal(t, 1, usage[0].Total)
 }

@@ -16,21 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Gauge, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
-import { ROLE } from '@/lib/roles'
-import { useAuthStore } from '@/stores/auth-store'
 
 import { useUsers } from './users-provider'
 
 export function UsersPrimaryButtons() {
   const { t } = useTranslation()
   const { setOpen, setCurrentRow } = useUsers()
-  const canManageConcurrency = useAuthStore(
-    (state) => state.auth.user?.role === ROLE.SUPER_ADMIN
-  )
 
   const handleCreate = () => {
     setCurrentRow(null)
@@ -39,19 +34,6 @@ export function UsersPrimaryButtons() {
 
   return (
     <div className='flex flex-wrap gap-2'>
-      {canManageConcurrency && (
-        <Button
-          size='sm'
-          variant='outline'
-          onClick={() => {
-            setCurrentRow(null)
-            setOpen('model-concurrency')
-          }}
-        >
-          <Gauge className='size-4' />
-          {t('Model concurrency')}
-        </Button>
-      )}
       <Button size='sm' onClick={handleCreate}>
         <Plus className='h-4 w-4' />
         {t('Add User')}

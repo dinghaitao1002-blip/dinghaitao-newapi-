@@ -1485,3 +1485,163 @@ func TestResponsesWebSocketPreRoutingRejectionsFollowHealthClassification(t *tes
 		})
 	}
 }
+
+func TestResponsesWSRequestConcurrencyFollowsSelectedGroupAndRetry(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	user, token := setupResponsesWSRequestTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Task{}, &model.ImageAsyncTask{}))
+	old := setting.ModelConcurrencyConfig2JSONString()
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(`{"enabled":true,"rules":[{"group":"vip","model":"ws-group-image","enabled":true,"max_concurrent":1},{"group":"standard","model":"ws-group-image","enabled":true,"max_concurrent":1}]}`))
+	t.Cleanup(func() { require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(old)) })
+	runner, _ := newResponsesWSTestRunner(t, token)
+	request := func() *http.Request {
+		return httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"ws-group-image","input":"hello"}`))
+	}
+	selected := &model.Channel{Id: 9921, Type: 1, Status: common.ChannelStatusEnabled, Key: "group-test-provider-key"}
+	require.Nil(t, runner(request(), "group-outer", func(first *gin.Context) *types.NewAPIError {
+		common.SetContextKey(first, constant.ContextKeyAutoGroup, "vip")
+		require.Nil(t, middleware.SetupContextForSelectedChannel(first, selected, "ws-group-image"))
+		// The outer request started before an auto group was chosen. Admission
+		// still occurs after selection, and a different group has independent room.
+		require.Nil(t, runner(request(), "group-inner", func(second *gin.Context) *types.NewAPIError {
+			common.SetContextKey(second, constant.ContextKeyAutoGroup, "standard")
+			require.Nil(t, middleware.SetupContextForSelectedChannel(second, selected, "ws-group-image"))
+			common.SetContextKey(first, constant.ContextKeyAutoGroup, "standard")
+			rejected := middleware.SetupContextForSelectedChannel(first, selected, "ws-group-image")
+			require.NotNil(t, rejected)
+			assert.Equal(t, http.StatusTooManyRequests, rejected.StatusCode)
+			assert.Equal(t, types.ErrorCode("model_concurrency_exceeded"), rejected.ToOpenAIError().Code)
+			usage, err := common.GetModelConcurrencyUsage(context.Background(), setting.GetModelConcurrencyConfig().Rules)
+			require.NoError(t, err)
+			assert.Equal(t, 1, usage[0].Total)
+			assert.Equal(t, 1, usage[1].Total)
+			return nil
+		}))
+		require.Nil(t, middleware.SetupContextForSelectedChannel(first, selected, "ws-group-image"))
+		usage, err := common.GetModelConcurrencyUsage(context.Background(), setting.GetModelConcurrencyConfig().Rules)
+		require.NoError(t, err)
+		assert.Zero(t, usage[0].Total)
+		assert.Equal(t, 1, usage[1].Total)
+		return nil
+	}))
+	usage, err := common.GetModelConcurrencyUsage(context.Background(), setting.GetModelConcurrencyConfig().Rules)
+	require.NoError(t, err)
+	for _, row := range usage {
+		assert.Zero(t, row.Total)
+	}
+	assert.Positive(t, user.Id)
+}
+
+func TestUnconfiguredModelConcurrencyDoesNotDependOnCounterRecovery(t *testing.T) {
+	previous := setting.ModelConcurrencyConfig2JSONString()
+	originalRedis, originalRDB := common.RedisEnabled, common.RDB
+	common.RedisEnabled, common.RDB = true, nil
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(`{"enabled":true,"rules":[{"group":"vip","model":"protected-image","enabled":true,"max_concurrent":1}]}`))
+	t.Cleanup(func() {
+		common.RedisEnabled, common.RDB = originalRedis, originalRDB
+		require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(previous))
+	})
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	c.Set("id", 4921)
+	finish, err := service.BeginModelConcurrency(c, "protected-image")
+	require.NoError(t, err, "unlimited source group must not depend on Redis")
+	defer finish()
+	common.SetContextKey(c, constant.ContextKeyAutoGroup, "vip")
+	require.ErrorIs(t, service.RebindModelConcurrency(c, "protected-image"), common.ErrModelConcurrencyUnavailable, "destination group must fail closed if counters cannot be recovered")
+}
+
+func TestGroupConcurrencyReenableRecoversTasksAcceptedDuringFallback(t *testing.T) {
+	user, _ := setupResponsesWSRequestTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Task{}, &model.ImageAsyncTask{}))
+	previous := setting.ModelConcurrencyConfig2JSONString()
+	enabled := `{"enabled":true,"rules":[{"model":"group-cycle-image","enabled":true,"max_concurrent":10},{"group":"vip","model":"group-cycle-image","enabled":true,"max_concurrent":1}]}`
+	disabled := strings.Replace(enabled, `"group":"vip","model":"group-cycle-image","enabled":true`, `"group":"vip","model":"group-cycle-image","enabled":false`, 1)
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(enabled))
+	t.Cleanup(func() { require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(previous)) })
+	makeContext := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+		c.Set("id", user.Id)
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, "vip")
+		return c
+	}
+	finish, err := service.BeginModelConcurrency(makeContext(), "group-cycle-image")
+	require.NoError(t, err)
+	finish()
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(disabled))
+	task := &model.Task{UserId: user.Id, Group: "vip", Status: model.TaskStatusSubmitted, Progress: "0%", Properties: model.Properties{OriginModelName: "group-cycle-image"}}
+	require.NoError(t, model.DB.Create(task).Error)
+	identity := model.TaskModelConcurrencyIdentity(task)
+	identity.Group = ""
+	_, err = common.RecoverModelConcurrencyLease(context.Background(), identity)
+	require.NoError(t, err)
+	t.Cleanup(func() { model.ReleaseTaskModelConcurrency(model.TaskModelConcurrencyIdentity(task)) })
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(enabled))
+	finish, err = service.BeginModelConcurrency(makeContext(), "group-cycle-image")
+	if finish != nil {
+		finish()
+	}
+	require.ErrorIs(t, err, common.ErrModelConcurrencyExceeded, "returning to identical JSON must still reconcile work accepted in the fallback scope")
+	usage, err := common.GetModelConcurrencyUsage(context.Background(), setting.GetModelConcurrencyConfig().Rules)
+	require.NoError(t, err)
+	assert.Zero(t, usage[0].Total)
+	assert.Equal(t, 1, usage[1].Total)
+}
+
+func TestImageWorkerRoutingWhileLimitsDisabledRetainsGroupForReenable(t *testing.T) {
+	user, _ := setupResponsesWSRequestTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Task{}, &model.ImageAsyncTask{}))
+	previous := setting.ModelConcurrencyConfig2JSONString()
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(`{"enabled":false,"rules":[]}`))
+	t.Cleanup(func() { require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(previous)) })
+	taskID, err := model.GenerateImageAsyncTaskID()
+	require.NoError(t, err)
+	task := &model.ImageAsyncTask{ID: taskID, UserID: user.Id, Model: "disabled-route-image", UsingGroup: "vip", Status: model.ImageAsyncStatusRunning, Owner: "route-worker", LeaseUntil: common.GetTimestamp() + 3600}
+	require.NoError(t, model.DB.Create(task).Error)
+	t.Cleanup(func() { model.ReleaseTaskModelConcurrency(model.ImageTaskModelConcurrencyIdentity(task)) })
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	c.Set("id", user.Id)
+	c.Set(service.ImageAsyncTaskIDContextKey, taskID)
+	c.Set(service.ImageAsyncOwnerContextKey, "route-worker")
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "auto")
+	common.SetContextKey(c, constant.ContextKeyAutoGroup, "standard")
+	selected := &model.Channel{Id: 9918, Type: 1, Status: common.ChannelStatusEnabled, Key: "group-worker-test-key"}
+	require.Nil(t, middleware.SetupContextForSelectedChannel(c, selected, task.Model))
+	group, err := model.ImageConcurrencyGroup(context.Background(), taskID, user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "standard", group)
+	task.UsingGroup = group
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(`{"enabled":true,"rules":[{"group":"standard","model":"disabled-route-image","enabled":true,"max_concurrent":1}]}`))
+	next, _ := gin.CreateTestContext(httptest.NewRecorder())
+	next.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	next.Set("id", user.Id)
+	common.SetContextKey(next, constant.ContextKeyUsingGroup, "standard")
+	finish, err := service.BeginModelConcurrency(next, task.Model)
+	if finish != nil {
+		finish()
+	}
+	require.ErrorIs(t, err, common.ErrModelConcurrencyExceeded, "enabling limits must recover the worker in its actual destination group")
+}
+
+func TestExistingRequestKeepsAdmissionScopeAfterSameGroupRuleEdit(t *testing.T) {
+	user, _ := setupResponsesWSRequestTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Task{}, &model.ImageAsyncTask{}))
+	previous := setting.ModelConcurrencyConfig2JSONString()
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(`{"enabled":true,"rules":[{"model":"scope-edit-image","enabled":true,"max_concurrent":10}]}`))
+	t.Cleanup(func() { require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(previous)) })
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	c.Set("id", user.Id)
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "vip")
+	finish, err := service.BeginModelConcurrency(c, "scope-edit-image")
+	require.NoError(t, err)
+	defer finish()
+	require.NoError(t, setting.UpdateModelConcurrencyConfigByJSONString(`{"enabled":true,"rules":[{"model":"scope-edit-image","enabled":true,"max_concurrent":10},{"group":"vip","model":"scope-edit-image","enabled":true,"max_concurrent":1}]}`))
+	require.NoError(t, service.RebindModelConcurrency(c, "scope-edit-image"))
+	usage, err := common.GetModelConcurrencyUsage(context.Background(), setting.GetModelConcurrencyConfig().Rules)
+	require.NoError(t, err)
+	assert.Equal(t, 1, usage[0].Total)
+	assert.Zero(t, usage[1].Total, "same-group retries keep already-admitted work in its original bucket")
+}

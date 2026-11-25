@@ -81,7 +81,10 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
+import { ModelConcurrencyDialog } from '../concurrency-limits/model-concurrency-dialog'
 import { safeJsonParse } from '../utils/json-parser'
 import { parseGroupModelPrices } from './group-model-pricing'
 import { GroupModelPricingDialog } from './group-model-pricing-dialog'
@@ -105,6 +108,7 @@ type GroupRatioVisualEditorProps = {
   maxTokenAutoGroupsField: ReactNode
   groupSpecialUsableGroup: string
   groupModelPricing?: string
+  savedGroupNames?: string[]
   onChange: (field: string, value: string) => void
 }
 
@@ -281,6 +285,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   maxTokenAutoGroupsField,
   groupSpecialUsableGroup,
   groupModelPricing,
+  savedGroupNames,
   onChange,
 }: GroupRatioVisualEditorProps) {
   const { t, i18n } = useTranslation()
@@ -377,6 +382,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
           onChange={onChange}
           onShowDetail={setDetailGroup}
           groupModelPricing={groupModelPricing ?? '{}'}
+          savedGroupNames={savedGroupNames}
         />
       </TabsContent>
       <TabsContent value='overrides' keepMounted>
@@ -483,6 +489,7 @@ type GroupPricingTableProps = {
   onChange: (field: string, value: string) => void
   onShowDetail: (name: string) => void
   groupModelPricing: string
+  savedGroupNames?: string[]
 }
 
 function GroupPricingTable({
@@ -492,10 +499,18 @@ function GroupPricingTable({
   onChange,
   onShowDetail,
   groupModelPricing,
+  savedGroupNames,
 }: GroupPricingTableProps) {
   const { t } = useTranslation()
   const [search, setSearch] = useState('')
   const [pricingGroup, setPricingGroup] = useState<string | null>(null)
+  const [concurrency, setConcurrency] = useState<{
+    group: string
+    model?: string
+  } | null>(null)
+  const canManageConcurrency = useAuthStore(
+    (state) => state.auth.user?.role === ROLE.SUPER_ADMIN
+  )
   const modelPrices = useMemo(
     () => parseGroupModelPrices(groupModelPricing),
     [groupModelPricing]
@@ -627,6 +642,13 @@ function GroupPricingTable({
             group={pricingGroup}
             prices={modelPrices[pricingGroup] ?? {}}
             onClose={() => setPricingGroup(null)}
+            onConfigureConcurrency={
+              canManageConcurrency &&
+              (savedGroupNames === undefined ||
+                savedGroupNames.includes(pricingGroup))
+                ? (model) => setConcurrency({ group: pricingGroup, model })
+                : undefined
+            }
             onApply={(prices) => {
               const next = { ...modelPrices }
               if (Object.keys(prices).length) next[pricingGroup] = prices
@@ -635,6 +657,23 @@ function GroupPricingTable({
               setPricingGroup(null)
             }}
           />
+        )}
+        {concurrency && (
+          <ModelConcurrencyDialog
+            key={JSON.stringify(concurrency)}
+            group={concurrency.group}
+            initialModel={concurrency.model}
+            onOpenChange={(open) => {
+              if (!open) setConcurrency(null)
+            }}
+          />
+        )}
+        {canManageConcurrency && (
+          <p className='text-muted-foreground mb-3 text-sm'>
+            {t(
+              'Save new or renamed groups before configuring model concurrency. Renaming or deleting a group preserves concurrency rules under the original name.'
+            )}
+          </p>
         )}
         <div className='flex min-w-0 flex-col gap-4'>
           <InputGroup className='max-w-sm'>
@@ -779,7 +818,7 @@ function GroupPricingTable({
                 className: 'text-right',
                 cellClassName: 'text-right',
                 cell: (row) => (
-                  <div className='flex justify-end gap-1'>
+                  <div className='flex flex-wrap justify-end gap-1'>
                     <Button
                       type='button'
                       variant='outline'
@@ -796,6 +835,27 @@ function GroupPricingTable({
                     >
                       {t('Model prices')}
                     </Button>
+                    {canManageConcurrency && (
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        onClick={() =>
+                          setConcurrency({ group: row.name.trim() })
+                        }
+                        disabled={
+                          !row.name.trim() ||
+                          duplicateNames.includes(row.name.trim()) ||
+                          (savedGroupNames !== undefined &&
+                            !savedGroupNames.includes(row.name.trim()))
+                        }
+                        aria-label={t('Model concurrency for group {{group}}', {
+                          group: row.name.trim(),
+                        })}
+                      >
+                        {t('Model concurrency')}
+                      </Button>
+                    )}
                     <Button
                       variant='ghost'
                       size='sm'

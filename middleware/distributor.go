@@ -672,6 +672,9 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	case constant.ChannelTypeCoze:
 		c.Set("bot_id", channel.Other)
 	}
+	if err := RebindModelConcurrency(c, modelName); err != nil {
+		return err
+	}
 	return nil
 }
 

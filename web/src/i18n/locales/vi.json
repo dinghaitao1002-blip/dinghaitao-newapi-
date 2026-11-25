@@ -7483,6 +7483,19 @@
     "Output price (USD / 1M tokens)": "Giá đầu ra (USD / 1 triệu token)",
     "Per second": "Mỗi giây",
     "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Đặt giá cơ sở riêng cho mỗi mô hình bằng USD. Hệ số nhóm áp dụng một lần. Giá riêng được ưu tiên.",
-    "This model already has a price in this group": "Mô hình này đã có giá trong nhóm"
+    "This model already has a price in this group": "Mô hình này đã có giá trong nhóm",
+    "Model concurrency for group {{group}}": "Đồng thời mô hình cho nhóm {{group}}",
+    "Choose a model in this group, then set shared limits and individual user concurrency. Pricing is saved separately.": "Chọn mô hình trong nhóm, rồi đặt giới hạn chung và mức đồng thời cho từng người dùng. Giá được lưu riêng.",
+    "Limits apply only to requests using group {{group}}. Models without an enabled group rule use the global concurrency defaults.": "Chỉ áp dụng cho yêu cầu thực sự dùng nhóm {{group}}. Mô hình không có quy tắc nhóm đang bật sẽ dùng giới hạn chung mặc định.",
+    "Global rules are defaults for groups without an enabled model concurrency rule.": "Quy tắc chung là mặc định cho nhóm không có quy tắc đồng thời mô hình đang bật.",
+    "Enable saved concurrency limits": "Bật giới hạn đồng thời đã lưu",
+    "Enable all saved concurrency rules?": "Bật tất cả quy tắc đồng thời đã lưu?",
+    "This enables saved global and group concurrency rules after Save Changes. Existing limits are preserved.": "Sau khi lưu thay đổi, quy tắc chung và quy tắc nhóm đã lưu sẽ được bật. Giữ nguyên giá trị giới hạn hiện có.",
+    "Starting from the global limits for this model. Applying this draft creates a separate rule for this group.": "Đã điền giới hạn chung hiện tại của mô hình. Áp dụng bản nháp sẽ tạo quy tắc riêng cho nhóm này.",
+    "Save new or renamed groups before configuring model concurrency. Renaming or deleting a group preserves concurrency rules under the original name.": "Hãy lưu nhóm mới hoặc đã đổi tên trước khi đặt mức đồng thời. Đổi tên hoặc xóa nhóm vẫn giữ quy tắc đồng thời dưới tên cũ.",
+    "User concurrency for {{model}}": "Đồng thời người dùng cho {{model}}",
+    "User concurrency": "Đồng thời người dùng",
+    "Model total concurrency in this group": "Tổng đồng thời của mô hình trong nhóm này",
+    "Manage group model limits in Group pricing under system settings.": "Quản lý giới hạn mô hình của nhóm trong mục giá nhóm tại cài đặt hệ thống."
   }
 }

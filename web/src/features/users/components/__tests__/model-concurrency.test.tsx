@@ -202,32 +202,13 @@ afterEach(() => {
 })
 
 describe('user model concurrency entry points', () => {
-  it('opens complete management from the users header without fetching concurrency before opening', async () => {
+  it('keeps group model management out of the users header without eager configuration requests', async () => {
     await renderUsers()
+    expect(
+      screen.queryByRole('button', { name: 'Model concurrency' })
+    ).not.toBeInTheDocument()
     expect(api.get).not.toHaveBeenCalledWith('/api/option/model_concurrency')
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Model concurrency' })
-    )
-    const dialog = await screen.findByRole('dialog', {
-      name: 'Model concurrency',
-    })
-    expect(
-      await within(dialog).findByRole('article', { name: 'image-pro' })
-    ).toBeVisible()
-    expect(
-      within(dialog).getByRole('switch', {
-        name: 'Enable model concurrency limits',
-      })
-    ).not.toHaveAttribute('aria-disabled', 'true')
-    expect(
-      within(dialog).getByRole('button', {
-        name: 'Delete concurrency for image-pro',
-      })
-    ).toBeEnabled()
-    expect(
-      within(dialog).getByText('User #99: limit 1; active 0')
-    ).toBeVisible()
-    expect(api.patch).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Add User' })).toBeVisible()
   })
 
   it('opens the row user preselected and saves only their changed limit while preserving shared settings and others', async () => {
@@ -394,7 +375,7 @@ describe('user model concurrency entry points', () => {
     ).not.toBeInTheDocument()
     expect(
       within(dialog).getByText(
-        'Add shared model rules from Model concurrency at the top of Users.'
+        'Manage group model limits in Group pricing under system settings.'
       )
     ).toBeVisible()
     expect(api.patch).not.toHaveBeenCalled()

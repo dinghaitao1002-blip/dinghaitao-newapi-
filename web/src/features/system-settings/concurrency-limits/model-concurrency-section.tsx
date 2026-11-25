@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -44,12 +44,16 @@ import {
 import { ConcurrencyRuleCard } from './concurrency-rule-card'
 import { ConcurrencyRuleDialog } from './concurrency-rule-dialog'
 import {
+  mergeConcurrencyChanges,
   mergeUserConcurrencyChanges,
   UserConcurrencyConflict,
 } from './lib/merge-user-overrides'
+import { modelConcurrencyRuleKey } from './lib/rule-identity'
 
 export function ModelConcurrencySection(props: {
   focusedUser?: ConcurrencyFocusedUser
+  group?: string
+  initialModel?: string
 }) {
   const { t } = useTranslation()
   const client = useQueryClient()
@@ -63,7 +67,14 @@ export function ModelConcurrencySection(props: {
   const [dialog, setDialog] = useState<{
     index: number
     rule: ModelConcurrencyRule | null
+    initialModel?: string
   } | null>(null)
+  const globalRules = useMemo(
+    () => draft?.rules.filter((rule) => !rule.group) ?? [],
+    [draft?.rules]
+  )
+  const openedInitialModel = useRef(false)
+  const [confirmEnable, setConfirmEnable] = useState(false)
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null)
   useEffect(() => {
     if (!query.data || dialog || deleteIndex !== null) return
@@ -74,19 +85,35 @@ export function ModelConcurrencySection(props: {
       setBaseline(query.data.config)
     }
   }, [query.data, draft, baseline, dialog, deleteIndex])
+  useEffect(() => {
+    if (!draft || !props.initialModel || openedInitialModel.current) return
+    openedInitialModel.current = true
+    const index = draft.rules.findIndex(
+      (rule) =>
+        (rule.group ?? '') === (props.group ?? '') &&
+        rule.model === props.initialModel
+    )
+    setDialog({
+      index,
+      rule: draft.rules[index] ?? null,
+      initialModel: props.initialModel,
+    })
+  }, [draft, props.initialModel, props.group])
   const save = useMutation({
     mutationFn: async (config: ModelConcurrencyConfig) => {
-      if (!props.focusedUser || !baseline) return updateModelConcurrency(config)
+      if (!baseline) return updateModelConcurrency(config)
       const latest = await getModelConcurrency({ fresh: true })
       client.setQueryData(modelConcurrencyQueryKey, latest)
       try {
         return await updateModelConcurrency(
-          mergeUserConcurrencyChanges(
-            baseline,
-            config,
-            latest.config,
-            props.focusedUser.id
-          )
+          props.focusedUser
+            ? mergeUserConcurrencyChanges(
+                baseline,
+                config,
+                latest.config,
+                props.focusedUser.id
+              )
+            : mergeConcurrencyChanges(baseline, config, latest.config)
         )
       } catch (error) {
         if (error instanceof UserConcurrencyConflict) {
@@ -130,6 +157,9 @@ export function ModelConcurrencySection(props: {
     return <LoadingState />
   }
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline)
+  const visibleRules = draft.rules
+    .map((rule, index) => ({ rule, index }))
+    .filter(({ rule }) => (rule.group ?? '') === (props.group ?? ''))
   return (
     <SettingsSection title={t('Concurrency Limits')}>
       <SettingsPageFormActions
@@ -155,6 +185,16 @@ export function ModelConcurrencySection(props: {
         </p>
       )}
       <p className='text-muted-foreground text-sm'>
+        {props.group !== undefined
+          ? t(
+              'Limits apply only to requests using group {{group}}. Models without an enabled group rule use the global concurrency defaults.',
+              { group: props.group }
+            )
+          : t(
+              'Global rules are defaults for groups without an enabled model concurrency rule.'
+            )}
+      </p>
+      <p className='text-muted-foreground text-sm'>
         {t(
           'Limit active requests by model and user. Requests above a limit return 429 without waiting.'
         )}
@@ -168,16 +208,30 @@ export function ModelConcurrencySection(props: {
         controlId='enable-model-concurrency'
         label={t('Enable model concurrency limits')}
         checked={draft.enabled}
-        disabled={save.isPending || !!props.focusedUser}
+        disabled={
+          save.isPending || !!props.focusedUser || props.group !== undefined
+        }
         onCheckedChange={(enabled) => setDraft({ ...draft, enabled })}
         className='rounded-xl border p-4'
       />
       {!draft.enabled && (
-        <p role='status' className='text-muted-foreground text-sm'>
-          {t(
-            'Model concurrency limits are disabled. Saved overrides do not take effect.'
+        <div className='space-y-2'>
+          <p role='status' className='text-muted-foreground text-sm'>
+            {t(
+              'Model concurrency limits are disabled. Saved overrides do not take effect.'
+            )}
+          </p>
+          {props.group !== undefined && !props.focusedUser && (
+            <Button
+              type='button'
+              variant='outline'
+              onClick={() => setConfirmEnable(true)}
+              disabled={save.isPending}
+            >
+              {t('Enable saved concurrency limits')}
+            </Button>
           )}
-        </p>
+        </div>
       )}
       <p className='text-muted-foreground text-sm'>
         {query.data.storage === 'redis'
@@ -227,33 +281,36 @@ export function ModelConcurrencySection(props: {
           </Button>
         )}
       </div>
-      {props.focusedUser && draft.rules.length > 0 && (
+      {props.focusedUser && visibleRules.length > 0 && (
         <p className='text-muted-foreground text-sm'>
           {t(
-            'Add shared model rules from Model concurrency at the top of Users.'
+            'Manage group model limits in Group pricing under system settings.'
           )}
         </p>
       )}
-      {draft.rules.length === 0 && (
+      {visibleRules.length === 0 && (
         <EmptyState
           title={t('No model concurrency rules')}
           description={
             props.focusedUser
               ? t(
-                  'Add shared model rules from Model concurrency at the top of Users.'
+                  'Manage group model limits in Group pricing under system settings.'
                 )
               : t('Add a model rule to configure shared and per-user limits.')
           }
           bordered
         />
       )}
-      {draft.rules.map((rule, index) => (
+      {visibleRules.map(({ rule, index }) => (
         <ConcurrencyRuleCard
-          key={rule.model}
+          key={modelConcurrencyRuleKey(rule)}
           rule={rule}
           focusedUser={props.focusedUser}
           usageAvailable={query.data.usage_available && !query.isError}
-          usage={query.data.usage.find((usage) => usage.model === rule.model)}
+          usage={query.data.usage.find(
+            (usage) =>
+              modelConcurrencyRuleKey(usage) === modelConcurrencyRuleKey(rule)
+          )}
           disabled={save.isPending}
           onEdit={() => setDialog({ index, rule })}
           onDelete={() => setDeleteIndex(index)}
@@ -270,7 +327,10 @@ export function ModelConcurrencySection(props: {
       <ConcurrencyRuleDialog
         open={dialog !== null}
         rule={dialog?.rule ?? null}
-        models={draft.rules.map((rule) => rule.model)}
+        models={visibleRules.map(({ rule }) => rule.model)}
+        group={props.group}
+        initialModel={dialog?.initialModel}
+        globalRules={globalRules}
         focusedUser={props.focusedUser}
         onOpenChange={(open) => {
           if (!open) setDialog(null)
@@ -278,9 +338,23 @@ export function ModelConcurrencySection(props: {
         onSave={(rule) => {
           if (!dialog) return
           const rules = [...draft.rules]
-          if (dialog.index < 0) rules.push(rule)
-          else rules[dialog.index] = rule
+          const scopedRule = { ...rule, group: props.group }
+          if (dialog.index < 0) rules.push(scopedRule)
+          else rules[dialog.index] = scopedRule
           setDraft({ ...draft, rules })
+        }}
+      />
+      <ConfirmDialog
+        open={confirmEnable}
+        onOpenChange={setConfirmEnable}
+        title={t('Enable all saved concurrency rules?')}
+        desc={t(
+          'This enables saved global and group concurrency rules after Save Changes. Existing limits are preserved.'
+        )}
+        confirmText={t('Enable')}
+        handleConfirm={() => {
+          setDraft({ ...draft, enabled: true })
+          setConfirmEnable(false)
         }}
       />
       <ConfirmDialog

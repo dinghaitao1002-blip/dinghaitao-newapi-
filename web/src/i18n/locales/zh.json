@@ -7483,6 +7483,19 @@
     "Output price (USD / 1M tokens)": "输出价格（美元 / 百万 Token）",
     "Per second": "按秒",
     "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "为分组内每个模型单独设置基础价格。单位为美元，计费时乘一次实际分组倍率；用户专属价格优先。",
-    "This model already has a price in this group": "此分组内该模型已设置价格"
+    "This model already has a price in this group": "此分组内该模型已设置价格",
+    "Model concurrency for group {{group}}": "分组 {{group}} 的模型并发",
+    "Choose a model in this group, then set shared limits and individual user concurrency. Pricing is saved separately.": "选择分组内的模型，设置共享上限和用户专属并发。价格单独保存。",
+    "Limits apply only to requests using group {{group}}. Models without an enabled group rule use the global concurrency defaults.": "仅限制实际使用 {{group}} 分组的请求。未启用分组规则的模型沿用全局并发默认值。",
+    "Global rules are defaults for groups without an enabled model concurrency rule.": "未启用分组模型并发规则时，使用这里的全局默认规则。",
+    "Enable saved concurrency limits": "启用已保存的并发限制",
+    "Enable all saved concurrency rules?": "启用全部已保存的并发规则？",
+    "This enables saved global and group concurrency rules after Save Changes. Existing limits are preserved.": "点击“保存更改”后，将启用已保存的全局及分组并发规则，现有上限数值保持不变。",
+    "Starting from the global limits for this model. Applying this draft creates a separate rule for this group.": "已填入此模型当前的全局上限。应用草稿后，将为此分组创建独立规则。",
+    "Save new or renamed groups before configuring model concurrency. Renaming or deleting a group preserves concurrency rules under the original name.": "新增或改名的分组请先保存，再设置模型并发。改名或删除分组时，原名称下的并发规则会保留。",
+    "User concurrency for {{model}}": "{{model}} 的用户并发",
+    "User concurrency": "用户并发",
+    "Model total concurrency in this group": "此分组内该模型总并发",
+    "Manage group model limits in Group pricing under system settings.": "请在系统设置的“分组定价”中管理分组模型并发。"
   }
 }

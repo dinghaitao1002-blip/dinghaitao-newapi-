@@ -7483,6 +7483,19 @@
     "Output price (USD / 1M tokens)": "輸出價格（美元 / 百萬 Token）",
     "Per second": "按秒",
     "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "為分組內每個模型單獨設定基礎價格。單位為美元，計費時乘一次實際分組倍率；使用者專屬價格優先。",
-    "This model already has a price in this group": "此分組內該模型已設定價格"
+    "This model already has a price in this group": "此分組內該模型已設定價格",
+    "Model concurrency for group {{group}}": "群組 {{group}} 的模型並行",
+    "Choose a model in this group, then set shared limits and individual user concurrency. Pricing is saved separately.": "選擇群組內的模型，設定共享上限和使用者專屬並行。價格另行儲存。",
+    "Limits apply only to requests using group {{group}}. Models without an enabled group rule use the global concurrency defaults.": "僅限制實際使用 {{group}} 群組的請求。未啟用群組規則的模型沿用全域並行預設值。",
+    "Global rules are defaults for groups without an enabled model concurrency rule.": "未啟用群組模型並行規則時，使用此處的全域預設規則。",
+    "Enable saved concurrency limits": "啟用已儲存的並行限制",
+    "Enable all saved concurrency rules?": "啟用全部已儲存的並行規則？",
+    "This enables saved global and group concurrency rules after Save Changes. Existing limits are preserved.": "點擊「儲存變更」後，將啟用已儲存的全域及群組並行規則，現有上限數值保持不變。",
+    "Starting from the global limits for this model. Applying this draft creates a separate rule for this group.": "已填入此模型目前的全域上限。套用草稿後，將為此群組建立獨立規則。",
+    "Save new or renamed groups before configuring model concurrency. Renaming or deleting a group preserves concurrency rules under the original name.": "新增或更名的群組請先儲存，再設定模型並行。更名或刪除群組時，原名稱下的並行規則會保留。",
+    "User concurrency for {{model}}": "{{model}} 的使用者並行",
+    "User concurrency": "使用者並行",
+    "Model total concurrency in this group": "此群組內該模型總並行",
+    "Manage group model limits in Group pricing under system settings.": "請在系統設定的「群組定價」中管理群組模型並行。"
   }
 }
