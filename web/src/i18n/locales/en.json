@@ -7483,6 +7483,19 @@
     "Output price (USD / 1M tokens)": "Output price (USD / 1M tokens)",
     "Per second": "Per second",
     "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.",
-    "This model already has a price in this group": "This model already has a price in this group"
+    "This model already has a price in this group": "This model already has a price in this group",
+    "Model concurrency for group {{group}}": "Model concurrency for group {{group}}",
+    "Choose a model in this group, then set shared limits and individual user concurrency. Pricing is saved separately.": "Choose a model in this group, then set shared limits and individual user concurrency. Pricing is saved separately.",
+    "Limits apply only to requests using group {{group}}. Models without an enabled group rule use the global concurrency defaults.": "Limits apply only to requests using group {{group}}. Models without an enabled group rule use the global concurrency defaults.",
+    "Global rules are defaults for groups without an enabled model concurrency rule.": "Global rules are defaults for groups without an enabled model concurrency rule.",
+    "Enable saved concurrency limits": "Enable saved concurrency limits",
+    "Enable all saved concurrency rules?": "Enable all saved concurrency rules?",
+    "This enables saved global and group concurrency rules after Save Changes. Existing limits are preserved.": "This enables saved global and group concurrency rules after Save Changes. Existing limits are preserved.",
+    "Starting from the global limits for this model. Applying this draft creates a separate rule for this group.": "Starting from the global limits for this model. Applying this draft creates a separate rule for this group.",
+    "Save new or renamed groups before configuring model concurrency. Renaming or deleting a group preserves concurrency rules under the original name.": "Save new or renamed groups before configuring model concurrency. Renaming or deleting a group preserves concurrency rules under the original name.",
+    "User concurrency for {{model}}": "User concurrency for {{model}}",
+    "User concurrency": "User concurrency",
+    "Model total concurrency in this group": "Model total concurrency in this group",
+    "Manage group model limits in Group pricing under system settings.": "Manage group model limits in Group pricing under system settings."
   }
 }

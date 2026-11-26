@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -23,7 +24,7 @@ func TestModelConcurrencyConfigValidation(t *testing.T) {
 	_, matched = config.Rule("another-model")
 	assert.False(t, matched)
 	for _, raw := range []string{
-		`null`, `[]`, `{"rules":[{"model":""}]}`,
+		`null`, `[]`, `{"rules":[{"group":null,"model":"a"}]}`, `{"rules":[{"group":" g ","model":"a"}]}`, `{"rules":[{"group":"g","model":"a"},{"group":"g","model":"a"}]}`, `{"rules":[{"model":""}]}`,
 		`{"rules":[{"model":"a","max_concurrent":-1}]}`,
 		`{"rules":[{"model":"a","max_concurrent":1.5}]}`,
 		`{"rules":[{"model":"a","max_concurrent":1000001}]}`,
@@ -41,6 +42,12 @@ func TestModelConcurrencyConfigValidation(t *testing.T) {
 		_, err := ParseModelConcurrencyConfig(raw)
 		assert.Error(t, err, raw)
 	}
+	scoped, err := ParseModelConcurrencyConfig(`{"enabled":true,"rules":[{"group":"vip","model":"a","enabled":true},{"group":"normal","model":"a","enabled":true},{"model":"a","enabled":true}]}`)
+	require.NoError(t, err)
+	require.Len(t, scoped.Rules, 3)
+	rule, matched = scoped.Rule("a", "vip")
+	require.True(t, matched)
+	assert.Equal(t, "vip", rule.Group)
 	config, err = ParseModelConcurrencyConfig(`{"enabled":false,"rules":[{"model":"a","enabled":true}]}`)
 	require.NoError(t, err)
 	_, matched = config.Rule("a")
@@ -254,6 +261,62 @@ func TestModelConcurrencyDurableTaskTransferAndRecovery(t *testing.T) {
 				_, err = AcquireModelConcurrency(ctx, rule.Model, 1, rule)
 				assert.True(t, errors.Is(err, ErrModelConcurrencyUnavailable), "Redis errors must not fall back to uncoordinated memory admission")
 			}
+		})
+	}
+}
+
+func TestModelConcurrencyGroupsIsolateAdmissionAndDurableLifecycle(t *testing.T) {
+	for _, backend := range []string{"memory", "redis"} {
+		t.Run(backend, func(t *testing.T) {
+			originalEnabled, originalRDB, originalMemory := RedisEnabled, RDB, modelConcurrencyMemory
+			RedisEnabled, RDB = false, nil
+			modelConcurrencyMemory = NewModelConcurrencyLimiter(nil, time.Minute)
+			t.Cleanup(func() { RedisEnabled, RDB, modelConcurrencyMemory = originalEnabled, originalRDB, originalMemory })
+			if backend == "redis" {
+				server := miniredis.RunT(t)
+				RDB = redis.NewClient(&redis.Options{Addr: server.Addr()})
+				RedisEnabled = true
+				t.Cleanup(func() { require.NoError(t, RDB.Close()) })
+			}
+			ctx := context.Background()
+			rules := []ModelConcurrencyRule{
+				{Model: "same:model", Enabled: true, MaxConcurrent: 1},
+				{Group: "vip:model", Model: "same:model", Enabled: true, MaxConcurrent: 1, DefaultUserLimit: 1},
+				{Group: "vip", Model: "model:same:model", Enabled: true, MaxConcurrent: 1},
+				{Group: "standard", Model: "same:model", Enabled: true, MaxConcurrent: 1},
+			}
+			leases := []*ModelConcurrencyLease{}
+			for _, rule := range rules {
+				lease, err := AcquireModelConcurrency(ctx, rule.Model, 21, rule)
+				require.NoError(t, err)
+				leases = append(leases, lease)
+			}
+			for _, rule := range rules {
+				_, err := AcquireModelConcurrency(ctx, rule.Model, 21, rule)
+				require.ErrorIs(t, err, ErrModelConcurrencyExceeded)
+			}
+			for i, lease := range leases {
+				require.NoError(t, lease.Renew(ctx))
+				require.NoError(t, lease.Transfer(ctx, "task:group-"+backend+"-"+strconv.Itoa(i)))
+			}
+			durable, err := ListDurableModelConcurrencyLeases(ctx)
+			require.NoError(t, err)
+			require.Len(t, durable, 4)
+			for _, identity := range durable {
+				restored, err := RestoreModelConcurrencyLease(identity)
+				require.NoError(t, err)
+				require.NoError(t, restored.Renew(ctx))
+				require.NoError(t, restored.Release(ctx))
+			}
+			usage, err := GetModelConcurrencyUsage(ctx, rules)
+			require.NoError(t, err)
+			for i, row := range usage {
+				assert.Equal(t, rules[i].Group, row.Group)
+				assert.Zero(t, row.Total)
+			}
+			durable, err = ListDurableModelConcurrencyLeases(ctx)
+			require.NoError(t, err)
+			assert.Empty(t, durable)
 		})
 	}
 }

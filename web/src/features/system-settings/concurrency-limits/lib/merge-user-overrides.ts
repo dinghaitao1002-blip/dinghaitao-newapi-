@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ModelConcurrencyConfig, ModelConcurrencyRule } from '../api'
+import { modelConcurrencyRuleKey, sameConcurrencyRule } from './rule-identity'
 
 export class UserConcurrencyConflict extends Error {
   model: string
@@ -40,11 +41,16 @@ export function mergeUserConcurrencyChanges(
       (user) => user.user_id === userId
     )
     const edited = draft.rules
-      .find((rule) => rule.model === originalRule.model)
+      .find(
+        (rule) =>
+          modelConcurrencyRuleKey(rule) ===
+          modelConcurrencyRuleKey(originalRule)
+      )
       ?.user_limits.find((user) => user.user_id === userId)
     if (original?.max_concurrent === edited?.max_concurrent) continue
     const currentRule = latest.rules.find(
-      (rule) => rule.model === originalRule.model
+      (rule) =>
+        modelConcurrencyRuleKey(rule) === modelConcurrencyRuleKey(originalRule)
     )
     const current = currentRule?.user_limits.find(
       (user) => user.user_id === userId
@@ -62,13 +68,50 @@ export function mergeUserConcurrencyChanges(
           )
         : [...currentRule.user_limits, edited]
     }
-    changedRules.set(currentRule.model, {
+    changedRules.set(modelConcurrencyRuleKey(currentRule), {
       ...currentRule,
       user_limits: userLimits,
     })
   }
   return {
     ...latest,
-    rules: latest.rules.map((rule) => changedRules.get(rule.model) ?? rule),
+    rules: latest.rules.map(
+      (rule) => changedRules.get(modelConcurrencyRuleKey(rule)) ?? rule
+    ),
   }
+}
+
+// Merge changed rules only; saving one group must not replace another editor's
+// changes to other groups, models, or the global enable switch.
+export function mergeConcurrencyChanges(
+  baseline: ModelConcurrencyConfig,
+  draft: ModelConcurrencyConfig,
+  latest: ModelConcurrencyConfig
+): ModelConcurrencyConfig {
+  const before = new Map(
+    baseline.rules.map((rule) => [modelConcurrencyRuleKey(rule), rule])
+  )
+  const edited = new Map(
+    draft.rules.map((rule) => [modelConcurrencyRuleKey(rule), rule])
+  )
+  const current = new Map(
+    latest.rules.map((rule) => [modelConcurrencyRuleKey(rule), rule])
+  )
+  for (const key of new Set([...before.keys(), ...edited.keys()])) {
+    const original = before.get(key)
+    const next = edited.get(key)
+    if (sameConcurrencyRule(original, next)) continue
+    if (
+      !sameConcurrencyRule(current.get(key), original) &&
+      !sameConcurrencyRule(current.get(key), next)
+    ) {
+      const rule = next ?? original
+      throw new UserConcurrencyConflict(rule?.model ?? '')
+    }
+    if (next) current.set(key, next)
+    else current.delete(key)
+  }
+  const enabled =
+    draft.enabled !== baseline.enabled ? draft.enabled : latest.enabled
+  return { ...latest, enabled, rules: [...current.values()] }
 }

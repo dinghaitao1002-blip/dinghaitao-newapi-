@@ -26,6 +26,7 @@ export type ModelConcurrencyUserLimit = {
   max_concurrent: number
 }
 export type ModelConcurrencyRule = {
+  group?: string
   model: string
   enabled: boolean
   max_concurrent: number
@@ -38,6 +39,7 @@ export type ModelConcurrencyConfig = {
   rules: ModelConcurrencyRule[]
 }
 export type ModelConcurrencyUsage = {
+  group?: string
   model: string
   total: number
   other_users: number

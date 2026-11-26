@@ -7483,6 +7483,19 @@
     "Output price (USD / 1M tokens)": "出力価格（USD / 100万トークン）",
     "Per second": "秒ごと",
     "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "モデルごとの基本価格を米ドルで設定します。グループ倍率を1回適用し、ユーザー専用価格を優先します。",
-    "This model already has a price in this group": "このグループでこのモデルの価格は設定済みです"
+    "This model already has a price in this group": "このグループでこのモデルの価格は設定済みです",
+    "Model concurrency for group {{group}}": "グループ {{group}} のモデル同時実行",
+    "Choose a model in this group, then set shared limits and individual user concurrency. Pricing is saved separately.": "グループのモデルを選択し、共有上限とユーザー別の同時実行数を設定します。料金は別に保存します。",
+    "Limits apply only to requests using group {{group}}. Models without an enabled group rule use the global concurrency defaults.": "実際にグループ {{group}} を使うリクエストだけに適用します。有効なグループルールがないモデルは全体の既定値を使います。",
+    "Global rules are defaults for groups without an enabled model concurrency rule.": "有効なグループ別モデルルールがない場合は、この全体の既定ルールを使います。",
+    "Enable saved concurrency limits": "保存済みの同時実行上限を有効化",
+    "Enable all saved concurrency rules?": "保存済みの同時実行ルールをすべて有効にしますか？",
+    "This enables saved global and group concurrency rules after Save Changes. Existing limits are preserved.": "変更を保存すると、保存済みの全体ルールとグループルールが有効になります。既存の上限値は維持します。",
+    "Starting from the global limits for this model. Applying this draft creates a separate rule for this group.": "このモデルの全体上限を入力済みです。下書きを適用すると、このグループ専用のルールが作成されます。",
+    "Save new or renamed groups before configuring model concurrency. Renaming or deleting a group preserves concurrency rules under the original name.": "新規または名前変更したグループは、先に保存してください。グループの名前変更や削除をしても、元の名前の同時実行ルールは残ります。",
+    "User concurrency for {{model}}": "{{model}} のユーザー別同時実行",
+    "User concurrency": "ユーザー別同時実行",
+    "Model total concurrency in this group": "このグループ内のモデル同時実行総数",
+    "Manage group model limits in Group pricing under system settings.": "システム設定のグループ料金で、グループ別のモデル上限を管理してください。"
   }
 }

@@ -59,6 +59,7 @@ import {
   SettingsSwitchItem,
 } from '../components/settings-form-layout'
 import { SettingsPageActionsPortal } from '../components/settings-page-context'
+import { safeJsonParse } from '../utils/json-parser'
 import { safeNumberFieldProps } from '../utils/numeric-field'
 import {
   GroupRatioVisualEditor,
@@ -166,6 +167,12 @@ export const GroupRatioForm = memo(function GroupRatioForm({
         </SettingsPageActionsPortal>
         {editMode === 'visual' ? (
           <GroupRatioVisualEditor
+            savedGroupNames={Object.keys(
+              safeJsonParse<Record<string, unknown>>(
+                form.formState.defaultValues?.GroupRatio ?? '{}',
+                {}
+              )
+            )}
             section={section}
             onSectionChange={setSection}
             groupRatio={values.GroupRatio ?? ''}

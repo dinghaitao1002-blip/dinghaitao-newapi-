@@ -120,7 +120,9 @@ export function ConcurrencyRuleCard(props: {
       <dl className='grid gap-3 text-sm sm:grid-cols-3'>
         <div>
           <dt className='text-muted-foreground'>
-            {t('Model total concurrency')}
+            {props.rule.group
+              ? t('Model total concurrency in this group')
+              : t('Model total concurrency')}
           </dt>
           <dd>{limit(props.rule.max_concurrent)}</dd>
         </div>

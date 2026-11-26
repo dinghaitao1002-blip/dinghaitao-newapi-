@@ -70,6 +70,7 @@ export function GroupModelPricingDialog(props: {
   group: string
   prices: Record<string, GroupModelPrice>
   onClose: () => void
+  onConfigureConcurrency?: (model: string) => void
   onApply: (prices: Record<string, GroupModelPrice>) => void
 }) {
   const { t } = useTranslation()
@@ -302,6 +303,24 @@ export function GroupModelPricingDialog(props: {
                     </FormItem>
                   )}
                 />
+                {props.onConfigureConcurrency && (
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    disabled={!values[index]?.model.trim()}
+                    onClick={() =>
+                      props.onConfigureConcurrency?.(
+                        values[index]?.model.trim() ?? ''
+                      )
+                    }
+                    aria-label={t('User concurrency for {{model}}', {
+                      model: values[index]?.model || t('Model'),
+                    })}
+                  >
+                    {t('User concurrency')}
+                  </Button>
+                )}
                 <Button
                   type='button'
                   variant='ghost'

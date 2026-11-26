@@ -110,7 +110,7 @@ func submitImageAsyncTask(c *gin.Context) {
 		ID: "imgtask_" + common.GetUUID(), UserID: c.GetInt("id"), TokenID: c.GetInt("token_id"),
 		Status: "queued", Operation: c.Request.URL.Path, ContentType: c.GetHeader("Content-Type"),
 		HeadersJSON: string(headerBytes), ClientIP: c.ClientIP(), TokenGroup: tokenGroup, UserGroup: userGroup,
-		UsingGroup: common.GetContextKeyString(c, constant.ContextKeyUsingGroup), SpecificChannelID: specific,
+		UsingGroup: service.EffectiveModelConcurrencyGroup(c), SpecificChannelID: specific,
 		Model: common.GetContextKeyString(c, constant.ContextKeyOriginalModel), RequestID: c.GetString(common.RequestIdKey),
 		Fingerprint: fingerprint, StorageNode: r.node, CreatedAt: now, ExpiresAt: now + int64(r.retention/time.Second),
 	}

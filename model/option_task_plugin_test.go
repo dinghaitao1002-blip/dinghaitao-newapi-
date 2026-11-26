@@ -244,6 +244,70 @@ func TestModelConcurrencyOptionAndTaskRecovery(t *testing.T) {
 			usage, err = common.GetModelConcurrencyUsage(ctx, config.Rules)
 			require.NoError(t, err)
 			assert.Zero(t, usage[0].Total, "deleted tasks must be reclaimed even while the rule is disabled")
+
+			// Group-scoped options persist without changing legacy option/schema data.
+			config.Enabled = true
+			config.Rules = []common.ModelConcurrencyRule{
+				{Model: modelName, Enabled: true, MaxConcurrent: 2},
+				{Group: "vip", Model: modelName, Enabled: true, MaxConcurrent: 1},
+				{Group: "standard", Model: modelName, Enabled: true, MaxConcurrent: 1},
+				{Group: "premium", Model: modelName, Enabled: true, MaxConcurrent: 1},
+			}
+			for i := range config.Rules {
+				config.Rules[i].UserLimits = []common.ModelConcurrencyUserLimit{}
+			}
+			encoded, err = common.Marshal(config)
+			require.NoError(t, err)
+			require.NoError(t, UpdateOption(common.ModelConcurrencyOptionKey, string(encoded)))
+			require.NoError(t, DB.Where(Option{Key: common.ModelConcurrencyOptionKey}).First(&option).Error)
+			restored, err := common.ParseModelConcurrencyConfig(option.Value)
+			require.NoError(t, err)
+			assert.Equal(t, config, restored)
+			groupedTask := &Task{UserId: 101, Group: "vip", Status: TaskStatusSubmitted, Progress: "0%", Properties: Properties{OriginModelName: modelName}}
+			require.NoError(t, DB.Create(groupedTask).Error)
+			groupedID, err := GenerateImageAsyncTaskID()
+			require.NoError(t, err)
+			groupedImage := &ImageAsyncTask{ID: groupedID, UserID: 101, Model: modelName, UsingGroup: "standard", Status: ImageAsyncStatusRunning, Owner: "test-owner", LeaseUntil: common.GetTimestamp() + 3600}
+			require.NoError(t, DB.Create(groupedImage).Error)
+			t.Cleanup(func() {
+				ReleaseTaskModelConcurrency(TaskModelConcurrencyIdentity(groupedTask))
+				ReleaseTaskModelConcurrency(ImageTaskModelConcurrencyIdentity(groupedImage))
+			})
+			require.NoError(t, ReconcileModelConcurrencyTasks(ctx, config))
+			usage, err = common.GetModelConcurrencyUsage(ctx, config.Rules)
+			require.NoError(t, err)
+			assert.Zero(t, usage[0].Total)
+			assert.Equal(t, 1, usage[1].Total)
+			assert.Equal(t, 1, usage[2].Total)
+			group, err := ImageConcurrencyGroup(ctx, groupedID, 101)
+			require.NoError(t, err)
+			assert.Equal(t, "standard", group)
+			require.Error(t, MoveImageConcurrencyGroup(ctx, groupedID, "wrong-owner", "premium"))
+			require.NoError(t, MoveImageConcurrencyGroup(ctx, groupedID, "test-owner", "premium"))
+			require.NoError(t, MoveImageConcurrencyGroup(ctx, groupedID, "test-owner", "premium"), "owned group moves are idempotent on every database")
+			groupedImage.UsingGroup = "premium"
+			require.NoError(t, ReconcileModelConcurrencyTasks(ctx, config))
+			usage, err = common.GetModelConcurrencyUsage(ctx, config.Rules)
+			require.NoError(t, err)
+			assert.Zero(t, usage[2].Total)
+			assert.Equal(t, 1, usage[3].Total, "restart recovery moves accepted work to its persisted destination group")
+			config.Rules[1].Enabled = false
+			config.Rules[3].Enabled = false
+			require.NoError(t, ReconcileModelConcurrencyTasks(ctx, config))
+			usage, err = common.GetModelConcurrencyUsage(ctx, config.Rules)
+			require.NoError(t, err)
+			assert.Equal(t, 2, usage[0].Total, "disabled group rules restore global fallback accounting")
+			assert.Zero(t, usage[1].Total)
+			assert.Zero(t, usage[3].Total)
+			groupedTask.Status, groupedTask.Progress = TaskStatusSuccess, "100%"
+			require.NoError(t, groupedTask.Update())
+			require.NoError(t, DB.Delete(groupedImage).Error)
+			require.NoError(t, ReconcileModelConcurrencyTasks(ctx, config))
+			usage, err = common.GetModelConcurrencyUsage(ctx, config.Rules)
+			require.NoError(t, err)
+			for _, row := range usage {
+				assert.Zero(t, row.Total, "terminal grouped tasks release both scoped and fallback identities")
+			}
 		})
 	}
 }

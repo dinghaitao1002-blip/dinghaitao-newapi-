@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -67,6 +67,9 @@ export function ConcurrencyRuleDialog(props: {
   rule: ModelConcurrencyRule | null
   models: string[]
   focusedUser?: ConcurrencyFocusedUser
+  group?: string
+  initialModel?: string
+  globalRules?: ModelConcurrencyRule[]
   onSave: (rule: ModelConcurrencyRule) => void
 }) {
   const { t } = useTranslation()
@@ -89,9 +92,26 @@ export function ConcurrencyRuleDialog(props: {
     resolver: zodResolver(modelConcurrencyRuleSchema),
     defaultValues: emptyRule,
   })
+  const selectedModel = useWatch({ control: form.control, name: 'model' })
+  const inheritedRule =
+    props.group !== undefined && !props.rule
+      ? props.globalRules?.find(
+          (rule) => rule.enabled && rule.model === selectedModel
+        )
+      : undefined
   useEffect(() => {
     if (!props.open) return
-    const values = props.rule ?? emptyRule
+    const inherited =
+      props.group !== undefined
+        ? props.globalRules?.find(
+            (rule) => rule.enabled && rule.model === props.initialModel
+          )
+        : undefined
+    const values = props.rule ?? {
+      ...(inherited ?? emptyRule),
+      model: props.initialModel ?? '',
+      group: props.group,
+    }
     if (
       !props.focusedUser ||
       values.user_limits.some((user) => user.user_id === props.focusedUser?.id)
@@ -109,7 +129,15 @@ export function ConcurrencyRuleDialog(props: {
         },
       ],
     })
-  }, [props.open, props.rule, props.focusedUser, form])
+  }, [
+    props.open,
+    props.rule,
+    props.focusedUser,
+    props.group,
+    props.initialModel,
+    props.globalRules,
+    form,
+  ])
   const submit = (values: ModelConcurrencyRuleValues) => {
     if (
       props.models.includes(values.model) &&
@@ -137,7 +165,7 @@ export function ConcurrencyRuleDialog(props: {
         : [...original.user_limits, selectedOverride]
       props.onSave({ ...original, user_limits: userLimits })
     } else {
-      props.onSave(values)
+      props.onSave({ ...values, group: props.group })
     }
     props.onOpenChange(false)
   }
@@ -186,7 +214,19 @@ export function ConcurrencyRuleDialog(props: {
                     name={field.name}
                     value={field.value}
                     onBlur={field.onBlur}
-                    onValueChange={(value) => field.onChange(value ?? '')}
+                    onValueChange={(value) => {
+                      const model = value ?? ''
+                      if (props.group !== undefined && !props.rule) {
+                        const inherited = props.globalRules?.find(
+                          (rule) => rule.enabled && rule.model === model
+                        )
+                        form.reset({
+                          ...(inherited ?? emptyRule),
+                          model,
+                          group: props.group,
+                        })
+                      } else field.onChange(model)
+                    }}
                     options={modelOptions}
                     allowCustomValue
                     openOnFocus={false}
@@ -239,6 +279,16 @@ export function ConcurrencyRuleDialog(props: {
               </FormItem>
             )}
           />
+          {inheritedRule && (
+            <p
+              role='status'
+              className='text-muted-foreground rounded-lg border p-3 text-sm'
+            >
+              {t(
+                'Starting from the global limits for this model. Applying this draft creates a separate rule for this group.'
+              )}
+            </p>
+          )}
           <FormField
             control={form.control}
             name='enabled'
@@ -263,7 +313,12 @@ export function ConcurrencyRuleDialog(props: {
                 name={item.name}
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>{t(item.label)}</FormLabel>
+                    <FormLabel>
+                      {item.name === 'max_concurrent' &&
+                      props.group !== undefined
+                        ? t('Model total concurrency in this group')
+                        : t(item.label)}
+                    </FormLabel>
                     <FormControl>
                       <Input
                         {...field}

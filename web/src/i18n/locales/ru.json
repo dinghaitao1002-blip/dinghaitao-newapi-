@@ -7483,6 +7483,19 @@
     "Output price (USD / 1M tokens)": "Цена вывода (USD / 1 млн токенов)",
     "Per second": "За секунду",
     "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Задайте базовую цену каждой модели в USD. Коэффициент группы применяется один раз. Личные цены приоритетны.",
-    "This model already has a price in this group": "Цена модели уже задана в этой группе"
+    "This model already has a price in this group": "Цена модели уже задана в этой группе",
+    "Model concurrency for group {{group}}": "Параллельность моделей группы {{group}}",
+    "Choose a model in this group, then set shared limits and individual user concurrency. Pricing is saved separately.": "Выберите модель группы и задайте общие и персональные лимиты. Цены сохраняются отдельно.",
+    "Limits apply only to requests using group {{group}}. Models without an enabled group rule use the global concurrency defaults.": "Лимиты действуют только для запросов группы {{group}}. Если правило группы не включено, применяются глобальные значения.",
+    "Global rules are defaults for groups without an enabled model concurrency rule.": "Глобальные правила применяются по умолчанию к группам без включённого правила параллельности модели.",
+    "Enable saved concurrency limits": "Включить сохранённые лимиты",
+    "Enable all saved concurrency rules?": "Включить все сохранённые правила параллельности?",
+    "This enables saved global and group concurrency rules after Save Changes. Existing limits are preserved.": "После сохранения будут включены сохранённые глобальные правила и правила групп. Текущие лимиты сохраняются.",
+    "Starting from the global limits for this model. Applying this draft creates a separate rule for this group.": "Подставлены глобальные лимиты модели. Применение черновика создаст отдельное правило для этой группы.",
+    "Save new or renamed groups before configuring model concurrency. Renaming or deleting a group preserves concurrency rules under the original name.": "Сначала сохраните новую или переименованную группу. При переименовании или удалении группы правила параллельности сохраняются под прежним именем.",
+    "User concurrency for {{model}}": "Параллельность пользователей для {{model}}",
+    "User concurrency": "Параллельность пользователя",
+    "Model total concurrency in this group": "Общая параллельность модели в этой группе",
+    "Manage group model limits in Group pricing under system settings.": "Управляйте лимитами моделей групп в разделе цен групп в системных настройках."
   }
 }

@@ -30,6 +30,7 @@ import { useForm } from 'react-hook-form'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { SettingsPageProvider } from '../../components/settings-page-context'
 import {
@@ -46,7 +47,10 @@ let client: QueryClient
 beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 })
-afterEach(() => client.clear())
+afterEach(() => {
+  client.clear()
+  useAuthStore.getState().auth.setUser(null)
+})
 
 function Fixture(props: {
   initial?: string
@@ -414,5 +418,158 @@ describe('group model pricing', () => {
       },
     })
     expect(onSave).not.toHaveBeenCalled()
+  })
+})
+
+describe('concurrency entry points within group pricing', () => {
+  it('opens a group with no price rules and does not save settings just by browsing', async () => {
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 1, username: 'operator', role: 100 })
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          config: { enabled: true, rules: [] },
+          usage: [],
+          usage_available: true,
+          storage: 'redis',
+        },
+      },
+    })
+    const save = vi.spyOn(api, 'patch')
+    render(<Fixture />)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Model concurrency for group vip' })
+    )
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Model concurrency for group vip',
+    })
+    expect(
+      await within(dialog).findByText('No model concurrency rules')
+    ).toBeVisible()
+    expect(
+      within(dialog).getByRole('button', { name: 'Add model rule' })
+    ).toBeEnabled()
+    expect(save).not.toHaveBeenCalled()
+  })
+  it('saves model concurrency separately and preserves an unsaved price in the underlying dialog', async () => {
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 1, username: 'operator', role: 100 })
+    const concurrency = {
+      enabled: true,
+      rules: [
+        {
+          model: 'image-a',
+          enabled: true,
+          max_concurrent: 20,
+          default_user_limit: 3,
+          other_users_limit: 0,
+          user_limits: [{ user_id: 193, max_concurrent: 12 }],
+        },
+      ],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/models/') {
+        return {
+          data: {
+            success: true,
+            data: { items: [{ model_name: 'image-a' }], total: 1 },
+          },
+        }
+      }
+      return {
+        data: {
+          success: true,
+          data: {
+            config: concurrency,
+            usage: [],
+            storage: 'redis',
+            usage_available: true,
+          },
+        },
+      }
+    })
+    const patch = vi
+      .spyOn(api, 'patch')
+      .mockImplementation(async (_url, body) => ({
+        data: { success: true, data: body },
+      }))
+    const onSave = vi.fn(async (_values: Record<string, unknown>) => {})
+    render(
+      <Fixture
+        initial={JSON.stringify({ vip: { 'image-a': imageRule } })}
+        onSave={onSave}
+      />
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Model prices for vip' })
+    )
+    const price = screen.getByRole('textbox', { name: 'Unit price (USD)' })
+    fireEvent.change(price, { target: { value: '0.123' } })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'User concurrency for image-a' })
+    )
+    const rule = await screen.findByRole('dialog', {
+      name: 'Add model concurrency',
+    })
+    expect(
+      within(rule).getByRole('spinbutton', {
+        name: 'Default concurrency per user',
+      })
+    ).toHaveValue(3)
+    fireEvent.change(
+      within(rule).getByRole('spinbutton', {
+        name: 'Default concurrency per user',
+      }),
+      { target: { value: '5' } }
+    )
+    await userEvent.click(
+      within(rule).getByRole('button', { name: 'Apply to draft' })
+    )
+    const group = screen.getByRole('dialog', {
+      name: 'Model concurrency for group vip',
+    })
+    await userEvent.click(
+      within(group).getByRole('button', { name: 'Save Changes' })
+    )
+    await waitFor(() => expect(patch).toHaveBeenCalledOnce())
+    expect(patch.mock.calls[0][0]).toBe('/api/option/model_concurrency')
+    expect(
+      (patch.mock.calls[0][1] as { config: { rules: unknown[] } }).config.rules
+    ).toEqual([
+      concurrency.rules[0],
+      { ...concurrency.rules[0], group: 'vip', default_user_limit: 5 },
+    ])
+    expect(onSave).not.toHaveBeenCalled()
+    await userEvent.click(within(group).getByRole('button', { name: 'Close' }))
+    expect(
+      screen.getByRole('textbox', { name: 'Unit price (USD)' })
+    ).toHaveValue('0.123')
+  })
+  it('disables concurrency for a renamed group until group settings have been saved', async () => {
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 1, username: 'operator', role: 100 })
+    render(<Fixture />)
+    const names = screen.getAllByRole('textbox', { name: 'Group name' })
+    const vip = names.find(
+      (input) => (input as HTMLInputElement).value === 'vip'
+    )
+    if (!vip) {
+      throw new Error('Expected the saved vip group input')
+    }
+    fireEvent.change(vip, { target: { value: 'vip-new' } })
+    expect(
+      screen.getByRole('button', {
+        name: 'Model concurrency for group vip-new',
+      })
+    ).toBeDisabled()
+    expect(
+      screen.getByRole('button', {
+        name: 'Model concurrency for group default',
+      })
+    ).toBeEnabled()
   })
 })
