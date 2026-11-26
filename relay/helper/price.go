@@ -176,6 +176,12 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		c.Set("group_model_pricing_applied", true)
 		info.BillingModelName = name
 		expression := rule.Expression
+		if billing_setting.IsGroupModelPricingForced(info.UsingGroup) {
+			if rule.Unit == "second" {
+				return hosttypes.PriceData{}, fmt.Errorf("per-second group pricing requires a task usage meter")
+			}
+			return modelPriceHelperTieredExpression(c, info, name, promptTokens, groupRatioInfo, expression, true)
+		}
 		// User-specific image grids retain their per-image meaning, even when
 		// the group's default is a request price. Public grids are below group prices.
 		if _, image := info.Request.(*dto.ImageRequest); image && info.UserId > 0 {
@@ -430,8 +436,10 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hostt
 			return hosttypes.PriceData{}, fmt.Errorf("group pricing unit %s requires a compatible usage meter", rule.Unit)
 		}
 		price := values.UnitPrice
-		if userPrice, ok := model.GetUserModelPrice(info.UserId, name); ok {
-			price = userPrice
+		if !billing_setting.IsGroupModelPricingForced(info.UsingGroup) {
+			if userPrice, ok := model.GetUserModelPrice(info.UserId, name); ok {
+				price = userPrice
+			}
 		}
 		quota, err := common.QuotaFromFloatStrict(price * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 		if err != nil {

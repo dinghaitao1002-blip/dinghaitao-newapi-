@@ -7496,6 +7496,16 @@
     "User concurrency for {{model}}": "{{model}} のユーザー別同時実行",
     "User concurrency": "ユーザー別同時実行",
     "Model total concurrency in this group": "このグループ内のモデル同時実行総数",
-    "Manage group model limits in Group pricing under system settings.": "システム設定のグループ料金で、グループ別のモデル上限を管理してください。"
+    "Manage group model limits in Group pricing under system settings.": "システム設定のグループ料金で、グループ別のモデル上限を管理してください。",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once.": "このグループのモデルごとに基本料金を設定します。料金は米ドルで、有効なグループ倍率は1回だけ適用されます。",
+    "Force group model prices": "グループのモデル料金を強制適用",
+    "Enabled model prices in this group override user private prices. Models without an enabled group price keep their existing pricing.": "このグループで有効なモデル料金はユーザー専用料金より優先されます。有効なグループ料金がないモデルは従来の料金を維持します。",
+    "Set a group to true to make its enabled model prices override user private prices.": "グループを true にすると、有効なモデル料金がユーザー専用料金より優先されます。",
+    "Group price priority must be a JSON object mapping group names to true or false.": "グループ料金の優先設定は、グループ名を true または false に対応させる JSON オブジェクトにしてください。",
+    "Models without an enabled group price keep their existing pricing.": "有効なグループ料金がないモデルは従来の料金を維持します。",
+    "Model prices are configured separately within each group. Disabled or missing rules keep existing pricing.": "グループごとにモデル料金を個別設定します。無効または未設定のルールは従来の料金を維持します。",
+    "Disabled or removed prices keep existing pricing rules. Click “Save group settings” after applying the draft to make changes effective.": "料金を無効化または削除すると、従来の料金ルールを使用します。下書きを適用後、「グループ設定を保存」をクリックして変更を有効にしてください。",
+    "forced group model pricing must be a JSON object mapping group names to booleans": "グループのモデル料金の強制設定は、グループ名を真偽値に対応させる JSON オブジェクトにしてください",
+    "forced group model pricing requires non-empty group names and boolean values": "グループのモデル料金の強制設定には、空でないグループ名と真偽値が必要です"
   }
 }

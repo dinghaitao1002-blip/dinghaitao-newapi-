@@ -121,9 +121,31 @@ export const groupPriceRowSchema = z
     }
   })
 
+export const groupModelPricingForceSchema = z.record(
+  z
+    .string()
+    .min(1)
+    .refine((key) => key === key.trim()),
+  z.boolean()
+)
+
+export function parseGroupModelPricingForce(
+  value: string | undefined
+): Record<string, boolean> | null {
+  try {
+    const parsed = groupModelPricingForceSchema.safeParse(
+      JSON.parse(value || '{}')
+    )
+    return parsed.success ? parsed.data : null
+  } catch {
+    return null
+  }
+}
+
 export const groupPriceFormSchema = z
   .object({
     rows: z.array(groupPriceRowSchema),
+    forceGroupPrice: z.boolean().optional(),
   })
   .superRefine((form, ctx) => {
     const seen = new Set<string>()

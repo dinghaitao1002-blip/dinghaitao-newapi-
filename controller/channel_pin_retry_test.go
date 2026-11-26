@@ -83,6 +83,7 @@ func TestImagePollTimeoutDoesNotReplayGeneration(t *testing.T) {
 	t.Cleanup(func() { operation_setting.AutomaticRetryStatusCodeRanges = previousRanges })
 	for _, tc := range []struct {
 		name, code, message, mode, mapping string
+		upstreamStatus                     int
 		showBody, wrapped, wantRetry       bool
 	}{
 		{name: "sync", code: "image_poll_timeout", message: "Image generation timed out. Please try again."},
@@ -90,6 +91,9 @@ func TestImagePollTimeoutDoesNotReplayGeneration(t *testing.T) {
 		{name: "async", code: "image_poll_timeout", message: "Image generation timed out.", mode: "async"},
 		{name: "wrapped detailed response", code: "image_poll_timeout", message: "Image generation timed out.", showBody: true, wrapped: true},
 		{name: "status mapping", code: "image_poll_timeout", message: "Image generation timed out.", mapping: `{"502":503}`},
+		{name: "accepted image auth probe failure", code: "image_poll_timeout", message: "The image task has already started, but its result could not be retrieved.", upstreamStatus: http.StatusUnauthorized},
+		{name: "accepted image forbidden probe", code: "image_poll_timeout", message: "The image task has already started, but its result could not be retrieved.", upstreamStatus: http.StatusForbidden},
+		{name: "accepted image unavailable probe", code: "image_poll_timeout", message: "The image task has already started, but its result could not be retrieved.", upstreamStatus: http.StatusServiceUnavailable},
 		{name: "ordinary gateway failure", code: "upstream_error", message: "Gateway failure.", wantRetry: true},
 		{name: "timeout message without structured code", code: "upstream_error", message: "Image generation timed out. Please try again.", wantRetry: true},
 		{name: "code mentioned in message only", code: "upstream_error", message: "image_poll_timeout", wantRetry: true},
@@ -104,7 +108,11 @@ func TestImagePollTimeoutDoesNotReplayGeneration(t *testing.T) {
 			}
 			body, err := common.Marshal(gin.H{"error": types.OpenAIError{Code: tc.code, Message: tc.message, Type: "server_error"}})
 			require.NoError(t, err)
-			apiErr := service.RelayErrorHandler(c.Request.Context(), &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(string(body)))}, tc.showBody)
+			upstreamStatus := tc.upstreamStatus
+			if upstreamStatus == 0 {
+				upstreamStatus = http.StatusBadGateway
+			}
+			apiErr := service.RelayErrorHandler(c.Request.Context(), &http.Response{StatusCode: upstreamStatus, Body: io.NopCloser(strings.NewReader(string(body)))}, tc.showBody)
 			require.NotNil(t, apiErr)
 			if tc.wrapped {
 				apiErr = types.NewError(fmt.Errorf("image request failed: %w", apiErr), types.ErrorCodeDoRequestFailed)

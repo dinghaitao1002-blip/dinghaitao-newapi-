@@ -85,6 +85,7 @@ func withVisibleGroupModelPricing(pricing []model.Pricing, usableGroups map[stri
 	copy(result, pricing)
 	for i := range result {
 		result[i].GroupModelPricing = nil
+		result[i].GroupModelPricingForce = nil
 		for group := range usableGroups {
 			if !common.StringsContains(result[i].EnableGroup, "all") && !common.StringsContains(result[i].EnableGroup, group) {
 				continue
@@ -94,6 +95,12 @@ func withVisibleGroupModelPricing(pricing []model.Pricing, usableGroups map[stri
 					result[i].GroupModelPricing = make(map[string]billing_setting.GroupModelPricingRule)
 				}
 				result[i].GroupModelPricing[group] = rule
+				if billing_setting.IsGroupModelPricingForced(group) {
+					if result[i].GroupModelPricingForce == nil {
+						result[i].GroupModelPricingForce = make(map[string]bool)
+					}
+					result[i].GroupModelPricingForce[group] = true
+				}
 			}
 		}
 	}

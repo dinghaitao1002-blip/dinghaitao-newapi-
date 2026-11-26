@@ -338,6 +338,11 @@ func UpdateOption(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+	case billing_setting.GroupModelPricingForceOption:
+		if err = billing_setting.ValidateGroupModelPricingForceJSONString(option.Value.(string)); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	case "billing_setting.billing_expr":
 		expressions := make(map[string]string)
 		if err = common.UnmarshalJsonStr(option.Value.(string), &expressions); err != nil {

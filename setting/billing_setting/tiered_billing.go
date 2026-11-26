@@ -39,17 +39,19 @@ type VideoSecondPrices struct {
 // DB keys: billing_setting.billing_mode, billing_setting.billing_expr,
 // billing_setting.plugin_billing_expr
 type BillingSetting struct {
-	BillingMode       map[string]string                           `json:"billing_mode"`
-	BillingExpr       map[string]string                           `json:"billing_expr"`
-	PluginBillingExpr map[string]string                           `json:"plugin_billing_expr"`
-	GroupModelPricing map[string]map[string]GroupModelPricingRule `json:"group_model_pricing"`
+	BillingMode            map[string]string                           `json:"billing_mode"`
+	BillingExpr            map[string]string                           `json:"billing_expr"`
+	PluginBillingExpr      map[string]string                           `json:"plugin_billing_expr"`
+	GroupModelPricing      map[string]map[string]GroupModelPricingRule `json:"group_model_pricing"`
+	GroupModelPricingForce map[string]bool                             `json:"group_model_pricing_force"`
 }
 
 var billingSetting = BillingSetting{
-	BillingMode:       make(map[string]string),
-	BillingExpr:       make(map[string]string),
-	PluginBillingExpr: make(map[string]string),
-	GroupModelPricing: make(map[string]map[string]GroupModelPricingRule),
+	BillingMode:            make(map[string]string),
+	BillingExpr:            make(map[string]string),
+	PluginBillingExpr:      make(map[string]string),
+	GroupModelPricing:      make(map[string]map[string]GroupModelPricingRule),
+	GroupModelPricingForce: make(map[string]bool),
 }
 
 func init() {

@@ -13,6 +13,30 @@ import (
 )
 
 const GroupModelPricingOption = "billing_setting.group_model_pricing"
+const GroupModelPricingForceOption = "billing_setting.group_model_pricing_force"
+
+// ValidateGroupModelPricingForceJSONString validates the per-group opt-in.
+// Missing groups remain on the existing user-private-price priority policy.
+func ValidateGroupModelPricingForceJSONString(raw string) error {
+	var groups map[string]common.RawMessage
+	if err := common.UnmarshalJsonStr(raw, &groups); err != nil || groups == nil {
+		return fmt.Errorf("forced group model pricing must be a JSON object mapping group names to booleans")
+	}
+	for group, enabled := range groups {
+		if group == "" || group != strings.TrimSpace(group) || (string(enabled) != "true" && string(enabled) != "false") {
+			return fmt.Errorf("forced group model pricing requires non-empty group names and boolean values")
+		}
+	}
+	return nil
+}
+
+// IsGroupModelPricingForced changes priority only; callers must first resolve
+// an enabled group/model rule so unpriced models keep their existing fallback.
+func IsGroupModelPricingForced(group string) bool {
+	common.OptionMapRWMutex.RLock()
+	defer common.OptionMapRWMutex.RUnlock()
+	return billingSetting.GroupModelPricingForce[group]
+}
 
 // GroupModelPricingRule keeps the expression as the only stored price. Unit
 // describes its billing quantity and does not add another conversion factor.

@@ -33,12 +33,15 @@ import (
 
 func TestPublicCatalogGroupPricesStayWithinVisibleGroups(t *testing.T) {
 	before := config.GlobalConfig.ExportAllConfigs()[billing_setting.GroupModelPricingOption]
+	beforeForce := config.GlobalConfig.ExportAllConfigs()[billing_setting.GroupModelPricingForceOption]
 	if before == "" {
 		before = "{}"
 	}
 	t.Cleanup(func() {
 		config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing": before})
+		config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing_force": beforeForce})
 	})
+	config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing_force": `{"vip":true,"hidden":true,"disabled":true,"unserved":true}`})
 	config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing": `{
 		"vip":{"catalog-test":{"unit":"request","expression":"tier(\"group_model\",fixed(0))","enabled":true}},
 		"hidden":{"catalog-test":{"unit":"request","expression":"tier(\"group_model\",fixed(9))","enabled":true}},
@@ -51,12 +54,16 @@ func TestPublicCatalogGroupPricesStayWithinVisibleGroups(t *testing.T) {
 	require.Len(t, visible[0].GroupModelPricing, 1)
 	assert.Equal(t, "tier(\"group_model\",fixed(0))", visible[0].GroupModelPricing["vip"].Expression)
 	assert.Nil(t, cached[0].GroupModelPricing, "the catalog cache must remain viewer-independent")
+	assert.Equal(t, map[string]bool{"vip": true}, visible[0].GroupModelPricingForce)
+	assert.Nil(t, cached[0].GroupModelPricingForce, "priority metadata must not leak into the shared catalog cache")
 	other := withVisibleGroupModelPricing(cached, map[string]string{"hidden": ""})
 	require.Len(t, other[0].GroupModelPricing, 1)
 	assert.Contains(t, other[0].GroupModelPricing, "hidden")
 	assert.NotContains(t, other[0].GroupModelPricing, "vip")
+	assert.Equal(t, map[string]bool{"hidden": true}, other[0].GroupModelPricingForce)
 	alias := withVisibleGroupModelPricing([]model.Pricing{{ModelName: "catalog-test@reasoning:low", EnableGroup: []string{"vip"}}}, map[string]string{"vip": ""})
 	require.Contains(t, alias[0].GroupModelPricing, "vip", "public display must use the same canonical client model fallback as runtime billing")
+	assert.Equal(t, map[string]bool{"vip": true}, alias[0].GroupModelPricingForce)
 }
 
 func TestPublicGroupRatiosIncludeFallbackAndPreserveZeroAndSpecial(t *testing.T) {

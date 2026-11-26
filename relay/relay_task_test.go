@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -505,7 +506,7 @@ func TestVideoPrivatePricePreservesSecondsAndFrozenSettlement(t *testing.T) {
 	for _, tc := range []struct {
 		name, expression, groupUnit, groupExpression string
 		privatePrice                                 *float64
-		disabled, alias, groupDisabled               bool
+		disabled, alias, groupDisabled, forceGroup   bool
 		noMeter, missingSeconds, wantPriceError      bool
 		wantQuota                                    int
 	}{
@@ -517,6 +518,11 @@ func TestVideoPrivatePricePreservesSecondsAndFrozenSettlement(t *testing.T) {
 		{name: "existing private rule cannot flatten dynamic pricing", expression: dynamicExpression, privatePrice: common.GetPointer(0.02), wantQuota: 300000},
 		{name: "group seconds price settles measured seconds", groupUnit: "second", groupExpression: `tier("group_model", u("seconds") * 0.03)`, wantQuota: 180000},
 		{name: "private seconds price precedes group price", privatePrice: common.GetPointer(0.02), groupUnit: "second", groupExpression: `tier("group_model", u("seconds") * 0.03)`, wantQuota: 120000},
+		{name: "forced group seconds price precedes private price", forceGroup: true, privatePrice: common.GetPointer(0.02), groupUnit: "second", groupExpression: `tier("group_model", u("seconds") * 0.03)`, wantQuota: 180000},
+		{name: "forced group request price replaces private seconds unit", forceGroup: true, privatePrice: common.GetPointer(0.02), groupUnit: "request", groupExpression: `tier("group_model", fixed(0.03))`, wantQuota: 22500},
+		{name: "forced group disabled rule preserves private price", forceGroup: true, groupDisabled: true, privatePrice: common.GetPointer(0.02), groupUnit: "second", groupExpression: `tier("group_model", u("seconds") * 0.03)`, wantQuota: 120000},
+		{name: "force without group model price preserves private price", forceGroup: true, privatePrice: common.GetPointer(0.02), wantQuota: 120000},
+		{name: "forced zero group seconds price remains free", forceGroup: true, privatePrice: common.GetPointer(0.02), groupUnit: "second", groupExpression: `tier("group_model", u("seconds") * 0)`},
 		{name: "zero group seconds price remains free", groupUnit: "second", groupExpression: `tier("group_model", u("seconds") * 0)`},
 		{name: "disabled group price retains public price", groupDisabled: true, groupUnit: "second", groupExpression: `tier("group_model", u("seconds") * 0.03)`, wantQuota: 300000},
 		{name: "group request price ignores duration", groupUnit: "request", groupExpression: `tier("group_model", fixed(0.03))`, wantQuota: 22500},
@@ -552,7 +558,8 @@ func TestVideoPrivatePricePreservesSecondsAndFrozenSettlement(t *testing.T) {
 			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
 				"billing_setting.billing_mode": string(modes), "billing_setting.billing_expr": string(expressions),
 				billing_setting.PluginBillingExprOption: `{}`, "group_ratio_setting.group_ratio": `{"default":1.5}`,
-				billing_setting.GroupModelPricingOption: string(groupJSON),
+				billing_setting.GroupModelPricingOption:      string(groupJSON),
+				billing_setting.GroupModelPricingForceOption: fmt.Sprintf(`{"default":%t}`, tc.forceGroup),
 			}))
 			registry := pluginruntime.NewRegistry()
 			source := strings.Replace(billingFallbackPlugin, `fetchMode:"per_task"`, `fetchMode:"per_task",usageSchema:{seconds:{type:"number",unit:"second",description:"Video generation unit price"},resolution:{enum:["720p","1080p"]}}`, 1)
@@ -596,7 +603,7 @@ func TestVideoPrivatePricePreservesSecondsAndFrozenSettlement(t *testing.T) {
 			settlement, usage, err = service.EvaluateTaskCompletionUsage(info.TieredBillingSnapshot, map[string]any{"seconds": float64(4)})
 			require.NoError(t, err)
 			wantFinal := tc.wantQuota / 2
-			if tc.groupUnit == "request" {
+			if tc.groupUnit == "request" && !tc.groupDisabled {
 				wantFinal = tc.wantQuota
 			}
 			assert.Equal(t, wantFinal, settlement.ActualQuotaAfterGroup)
@@ -625,6 +632,7 @@ func TestSharedEndpointBillingKeepsOrdinaryAndPluginPricesSeparate(t *testing.T)
 		privatePrice                        *float64
 		privateDisabled                     bool
 		unifiedImagePrice                   bool
+		forceGroup                          bool
 		wantTaskPriceError                  bool
 	}{
 		{name: "task usage price is rejected by ordinary relay", expression: taskExpr, taskQuota: 50000, taskFinal: 75000, wantError: "task usage expression"},
@@ -647,6 +655,11 @@ func TestSharedEndpointBillingKeepsOrdinaryAndPluginPricesSeparate(t *testing.T)
 		{name: "group image price uses equivalent relay and task units", expression: ordinaryExpr, override: taskExpr, groupUnit: "image", groupExpression: `tier("group_model", fixed(0.03)) * image_count`, ordinaryQuota: 30000, taskQuota: 30000, taskFinal: 45000},
 		{name: "mapped group image price keeps client identity", expression: ordinaryExpr, override: taskExpr, alias: true, groupUnit: "image", groupExpression: `tier("group_model", fixed(0.03)) * image_count`, ordinaryQuota: 30000, taskQuota: 30000, taskFinal: 45000},
 		{name: "user image price precedes group on both paths", expression: ordinaryExpr, override: taskExpr, privatePrice: common.GetPointer(0.02), groupUnit: "image", groupExpression: `tier("group_model", fixed(0.03)) * image_count`, ordinaryQuota: 20000, taskQuota: 20000, taskFinal: 30000},
+		{name: "forced group image price precedes private on both paths", expression: ordinaryExpr, override: taskExpr, forceGroup: true, privatePrice: common.GetPointer(0.045), groupUnit: "image", groupExpression: `tier("group_model", fixed(0.06)) * image_count`, ordinaryQuota: 60000, taskQuota: 60000, taskFinal: 90000},
+		{name: "forced group mapped image price preserves client identity", expression: ordinaryExpr, override: taskExpr, forceGroup: true, alias: true, privatePrice: common.GetPointer(0.02), groupUnit: "image", groupExpression: `tier("group_model", fixed(0.03)) * image_count`, ordinaryQuota: 30000, taskQuota: 30000, taskFinal: 45000},
+		{name: "forced group request price replaces private image unit", expression: ordinaryExpr, override: taskExpr, forceGroup: true, privatePrice: common.GetPointer(0.02), groupUnit: "request", groupExpression: `tier("group_model", fixed(0.03))`, ordinaryQuota: 15000, taskQuota: 15000, taskFinal: 15000},
+		{name: "forced group free image price precedes private", expression: ordinaryExpr, override: taskExpr, forceGroup: true, privatePrice: common.GetPointer(0.02), groupUnit: "image", groupExpression: `tier("group_model", fixed(0)) * image_count`},
+		{name: "force without group image rule retains private", expression: ordinaryExpr, override: taskExpr, forceGroup: true, privatePrice: common.GetPointer(0.02), ordinaryQuota: 20000, taskQuota: 20000, taskFinal: 30000},
 		{name: "group request price stays once on both paths", expression: ordinaryExpr, override: taskExpr, groupUnit: "request", groupExpression: `tier("group_model", fixed(0.03))`, ordinaryQuota: 15000, taskQuota: 15000, taskFinal: 15000},
 		{name: "group zero image price stays free on both paths", expression: ordinaryExpr, override: taskExpr, groupUnit: "image", groupExpression: `tier("group_model", fixed(0)) * image_count`},
 		{name: "group token price is ordinary even when plugin inherits global task units", expression: taskExpr, groupUnit: "token", groupExpression: `tier("group_model", p * 2 + c * 8)`, ordinaryQuota: 1000, wantTaskPriceError: true},
@@ -688,7 +701,8 @@ func TestSharedEndpointBillingKeepsOrdinaryAndPluginPricesSeparate(t *testing.T)
 			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
 				"billing_setting.billing_mode": string(modes), "billing_setting.billing_expr": string(expressions),
 				billing_setting.PluginBillingExprOption: string(overrides), "group_ratio_setting.group_ratio": `{"default":1}`,
-				billing_setting.GroupModelPricingOption: string(groupJSON),
+				billing_setting.GroupModelPricingOption:      string(groupJSON),
+				billing_setting.GroupModelPricingForceOption: fmt.Sprintf(`{"default":%t}`, tc.forceGroup),
 			}))
 			prices, err := common.Marshal(map[string]float64{name: 0.04})
 			require.NoError(t, err)
@@ -754,7 +768,7 @@ func TestSharedEndpointBillingKeepsOrdinaryAndPluginPricesSeparate(t *testing.T)
 			// Updating live prices must not change either in-flight meter.
 			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
 				"billing_setting.billing_expr": `{}`, billing_setting.PluginBillingExprOption: `{}`,
-				billing_setting.GroupModelPricingOption: `{}`,
+				billing_setting.GroupModelPricingOption: `{}`, billing_setting.GroupModelPricingForceOption: `{}`,
 			}))
 			settlement, _, err := service.EvaluateTaskCompletionUsage(task.TieredBillingSnapshot, map[string]any{"image_count": float64(3)})
 			require.NoError(t, err)

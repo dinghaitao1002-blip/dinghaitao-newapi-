@@ -49,6 +49,7 @@ func TestImageQualityPricingPrecedesOnlyBuiltinTieredDefault(t *testing.T) {
 	for _, tc := range []struct {
 		name, mode, source     string
 		public, private, group bool
+		forceGroup             bool
 		userFlatPrice          *float64
 		modifier               bool
 		wantPrice              float64
@@ -66,6 +67,11 @@ func TestImageQualityPricingPrecedesOnlyBuiltinTieredDefault(t *testing.T) {
 		{name: "user flat price precedes group image price", public: true, group: true, userFlatPrice: common.GetPointer(0.05), wantTiered: true, wantPrice: 0.05},
 		{name: "zero user flat price precedes group image price", public: true, group: true, userFlatPrice: common.GetPointer(0.0), wantTiered: true},
 		{name: "canonical user price precedes exact modifier group rule", group: true, modifier: true, userFlatPrice: common.GetPointer(0.05), wantTiered: true, wantPrice: 0.05},
+		{name: "forced group price overrides private quality grid", public: true, private: true, group: true, forceGroup: true, wantTiered: true, wantPrice: 0.03},
+		{name: "forced group price overrides scalar private price", group: true, forceGroup: true, userFlatPrice: common.GetPointer(0.05), wantTiered: true, wantPrice: 0.03},
+		{name: "forced group price overrides private free price", group: true, forceGroup: true, userFlatPrice: common.GetPointer(0.0), wantTiered: true, wantPrice: 0.03},
+		{name: "forced group modifier retains exact group rule", group: true, forceGroup: true, modifier: true, userFlatPrice: common.GetPointer(0.05), wantTiered: true, wantPrice: 0.03},
+		{name: "force without group model price preserves private quality grid", private: true, forceGroup: true, source: "user_image_quality_private", wantPrice: 0.1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.NoError(t, db.Where("1 = 1").Delete(&model.ModelImageQualityPrice{}).Error)
@@ -73,6 +79,7 @@ func TestImageQualityPricingPrecedesOnlyBuiltinTieredDefault(t *testing.T) {
 			require.NoError(t, db.Where("1 = 1").Delete(&model.UserModelPrice{}).Error)
 			require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
 			*settings = billing_setting.BillingSetting{BillingMode: map[string]string{}, BillingExpr: map[string]string{}}
+			settings.GroupModelPricingForce = map[string]bool{"default": tc.forceGroup}
 			requestModel := modelName
 			if tc.modifier {
 				requestModel += "@temperature:0.2"
@@ -108,7 +115,7 @@ func TestImageQualityPricingPrecedesOnlyBuiltinTieredDefault(t *testing.T) {
 					expected, err := common.QuotaRoundStrict(tc.wantPrice * common.QuotaPerUnit * priceData.GroupRatioInfo.GroupRatio * 2)
 					require.NoError(t, err)
 					require.Equal(t, expected, priceData.QuotaToPreConsume)
-					if tc.private || tc.userFlatPrice != nil {
+					if !tc.forceGroup && (tc.private || tc.userFlatPrice != nil) {
 						require.Equal(t, "user_private", info.TieredBillingSnapshot.EstimatedTier)
 						if tc.modifier {
 							require.Equal(t, modelName, info.GetBillingModelName())

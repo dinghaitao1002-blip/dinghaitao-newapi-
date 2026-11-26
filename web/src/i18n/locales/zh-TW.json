@@ -7496,6 +7496,16 @@
     "User concurrency for {{model}}": "{{model}} 的使用者並行",
     "User concurrency": "使用者並行",
     "Model total concurrency in this group": "此群組內該模型總並行",
-    "Manage group model limits in Group pricing under system settings.": "請在系統設定的「群組定價」中管理群組模型並行。"
+    "Manage group model limits in Group pricing under system settings.": "請在系統設定的「群組定價」中管理群組模型並行。",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once.": "分別設定此分組下各模型的基礎價格。價格單位為美元，有效分組倍率僅套用一次。",
+    "Force group model prices": "強制使用分組價格",
+    "Enabled model prices in this group override user private prices. Models without an enabled group price keep their existing pricing.": "此分組內已啟用的模型價格優先於使用者專屬價。未設定或未啟用分組價格的模型繼續使用原計費規則。",
+    "Set a group to true to make its enabled model prices override user private prices.": "將分組設為 true，其已啟用的模型價格將優先於使用者專屬價。",
+    "Group price priority must be a JSON object mapping group names to true or false.": "分組價格優先順序必須是 JSON 物件，分組名稱對應的值須為 true 或 false。",
+    "Models without an enabled group price keep their existing pricing.": "未設定或未啟用分組價格的模型繼續使用原計費規則。",
+    "Model prices are configured separately within each group. Disabled or missing rules keep existing pricing.": "分別設定各分組內的模型價格。未設定或未啟用的規則繼續使用原計費方式。",
+    "Disabled or removed prices keep existing pricing rules. Click “Save group settings” after applying the draft to make changes effective.": "停用或移除價格後，繼續使用原計費規則。套用草稿後，請點選「儲存分組設定」使變更生效。",
+    "forced group model pricing must be a JSON object mapping group names to booleans": "強制分組模型定價必須是 JSON 物件，分組名稱對應的值須為布林值",
+    "forced group model pricing requires non-empty group names and boolean values": "強制分組模型定價要求分組名稱非空，且對應的值為布林值"
   }
 }
