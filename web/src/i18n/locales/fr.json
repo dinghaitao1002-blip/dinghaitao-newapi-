@@ -7483,6 +7483,16 @@
     "Output price (USD / 1M tokens)": "Prix de sortie (USD / 1M tokens)",
     "Per second": "Par seconde",
     "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Définissez un prix de base par modèle en USD. Le ratio effectif du groupe s’applique une fois. Les prix privés sont prioritaires.",
-    "This model already has a price in this group": "Ce modèle a déjà un prix dans ce groupe"
+    "This model already has a price in this group": "Ce modèle a déjà un prix dans ce groupe",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once.": "Définissez un prix de base distinct pour chaque modèle de ce groupe. Les prix sont en USD et le coefficient effectif du groupe est appliqué une seule fois.",
+    "Force group model prices": "Imposer les prix des modèles du groupe",
+    "Enabled model prices in this group override user private prices. Models without an enabled group price keep their existing pricing.": "Les prix activés dans ce groupe remplacent les prix privés des utilisateurs. Les modèles sans prix de groupe activé conservent leur tarification actuelle.",
+    "Set a group to true to make its enabled model prices override user private prices.": "Définissez un groupe sur true pour que ses prix activés remplacent les prix privés des utilisateurs.",
+    "Group price priority must be a JSON object mapping group names to true or false.": "La priorité des prix doit être un objet JSON associant chaque nom de groupe à true ou false.",
+    "Models without an enabled group price keep their existing pricing.": "Les modèles sans prix de groupe activé conservent leur tarification actuelle.",
+    "Model prices are configured separately within each group. Disabled or missing rules keep existing pricing.": "Les prix des modèles sont définis séparément dans chaque groupe. Les règles absentes ou désactivées conservent la tarification actuelle.",
+    "Disabled or removed prices keep existing pricing rules. Click “Save group settings” after applying the draft to make changes effective.": "Les prix désactivés ou supprimés conservent les règles de tarification actuelles. Cliquez sur « Enregistrer les paramètres du groupe » après avoir appliqué le brouillon pour activer les modifications.",
+    "forced group model pricing must be a JSON object mapping group names to booleans": "La tarification forcée des modèles de groupe doit être un objet JSON associant les noms de groupe à des valeurs booléennes",
+    "forced group model pricing requires non-empty group names and boolean values": "La tarification forcée des modèles de groupe nécessite des noms de groupe non vides et des valeurs booléennes"
   }
 }

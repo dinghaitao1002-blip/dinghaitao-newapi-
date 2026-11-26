@@ -261,6 +261,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 	groupRatioInfo := helper.HandleGroupRatio(c, info)
 	groupRule, groupConfigured := helper.GroupModelPricingRuleForModel(info.UsingGroup, modelName)
+	forceGroupPrice := groupConfigured && billing_setting.IsGroupModelPricingForced(info.UsingGroup)
 	exprStr, exists := billing_setting.ResolveTaskBillingExpr(pluginKey, modelName, info.UpstreamModelName)
 	useTiered := exists || billing_setting.GetBillingMode(modelName) == billing_setting.BillingModeTieredExpr
 	privateApplied := false
@@ -268,6 +269,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// Preserve the existing user's unit, even if the group's rule chooses a
 	// different one. Dynamic public expressions remain outside scalar private pricing.
 	for _, key := range []string{"image_count", "seconds"} {
+		if forceGroupPrice {
+			break
+		}
 		if _, flat := billingexpr.TaskUnitPrice(exprStr, key); !flat {
 			continue
 		}
@@ -291,8 +295,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			return nil, service.TaskErrorWrapperLocal(fmt.Errorf("token group pricing requires token usage and cannot price a task usage request"), "model_price_error", http.StatusBadRequest)
 		}
 		price, tier := values.UnitPrice, "group_model"
-		if userPrice, configured := model.GetUserModelPrice(info.UserId, modelName); configured {
-			price, tier = userPrice, "user_private"
+		if !forceGroupPrice {
+			if userPrice, configured := model.GetUserModelPrice(info.UserId, modelName); configured {
+				price, tier = userPrice, "user_private"
+			}
 		}
 		switch groupRule.Unit {
 		case "request":

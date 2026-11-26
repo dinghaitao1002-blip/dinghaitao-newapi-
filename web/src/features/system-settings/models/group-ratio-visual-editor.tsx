@@ -28,6 +28,7 @@ import {
 import { Reorder } from 'motion/react'
 import {
   useState,
+  useRef,
   useMemo,
   useEffect,
   useCallback,
@@ -83,7 +84,10 @@ import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
 import { safeJsonParse } from '../utils/json-parser'
-import { parseGroupModelPrices } from './group-model-pricing'
+import {
+  parseGroupModelPrices,
+  parseGroupModelPricingForce,
+} from './group-model-pricing'
 import { GroupModelPricingDialog } from './group-model-pricing-dialog'
 import { GroupSpecialUsableRulesEditor } from './group-special-usable-editor'
 
@@ -105,6 +109,7 @@ type GroupRatioVisualEditorProps = {
   maxTokenAutoGroupsField: ReactNode
   groupSpecialUsableGroup: string
   groupModelPricing?: string
+  groupModelPricingForce?: string
   onChange: (field: string, value: string) => void
 }
 
@@ -281,6 +286,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   maxTokenAutoGroupsField,
   groupSpecialUsableGroup,
   groupModelPricing,
+  groupModelPricingForce,
   onChange,
 }: GroupRatioVisualEditorProps) {
   const { t, i18n } = useTranslation()
@@ -377,6 +383,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
           onChange={onChange}
           onShowDetail={setDetailGroup}
           groupModelPricing={groupModelPricing ?? '{}'}
+          groupModelPricingForce={groupModelPricingForce ?? '{}'}
         />
       </TabsContent>
       <TabsContent value='overrides' keepMounted>
@@ -483,6 +490,7 @@ type GroupPricingTableProps = {
   onChange: (field: string, value: string) => void
   onShowDetail: (name: string) => void
   groupModelPricing: string
+  groupModelPricingForce: string
 }
 
 function GroupPricingTable({
@@ -492,6 +500,7 @@ function GroupPricingTable({
   onChange,
   onShowDetail,
   groupModelPricing,
+  groupModelPricingForce,
 }: GroupPricingTableProps) {
   const { t } = useTranslation()
   const [search, setSearch] = useState('')
@@ -500,9 +509,14 @@ function GroupPricingTable({
     () => parseGroupModelPrices(groupModelPricing),
     [groupModelPricing]
   )
+  const forceGroupPrices = useMemo(
+    () => parseGroupModelPricingForce(groupModelPricingForce),
+    [groupModelPricingForce]
+  )
   const [rows, setRows] = useState<GroupPricingRow[]>(() =>
     buildGroupPricingRows(groupRatio, userUsableGroups, topupGroupRatio)
   )
+  const pricingNames = useRef(new Map(rows.map((row) => [row._id, row.name])))
 
   useEffect(() => {
     const incomingSignature = sourceGroupPricingSignature(
@@ -539,11 +553,42 @@ function GroupPricingTable({
       field: Exclude<keyof GroupPricingRow, '_id'>,
       value: string | number | boolean
     ) => {
+      const row = rows.find((item) => item._id === id)
+      const oldName = pricingNames.current.get(id) ?? row?.name.trim()
+      if (oldName) pricingNames.current.set(id, oldName)
+      const name = String(value).trim()
+      if (
+        field === 'name' &&
+        oldName &&
+        name &&
+        name !== oldName &&
+        !rows.some((item) => item._id !== id && item.name.trim() === name) &&
+        modelPrices !== null &&
+        forceGroupPrices !== null &&
+        !Object.hasOwn(modelPrices, name) &&
+        !Object.hasOwn(forceGroupPrices, name)
+      ) {
+        const nextPrices = { ...modelPrices }
+        const nextForce = { ...forceGroupPrices }
+        if (Object.hasOwn(nextPrices, oldName)) {
+          nextPrices[name] = nextPrices[oldName]
+          delete nextPrices[oldName]
+          onChange('GroupModelPricing', JSON.stringify(nextPrices, null, 2))
+        }
+        if (Object.hasOwn(nextForce, oldName)) {
+          nextForce[name] = nextForce[oldName]
+          delete nextForce[oldName]
+          onChange('GroupModelPricingForce', JSON.stringify(nextForce, null, 2))
+        }
+        pricingNames.current.set(id, name)
+      }
       emitRows(
-        rows.map((row) => (row._id === id ? { ...row, [field]: value } : row))
+        rows.map((item) =>
+          item._id === id ? { ...item, [field]: value } : item
+        )
       )
     },
-    [emitRows, rows]
+    [emitRows, rows, modelPrices, forceGroupPrices, onChange]
   )
 
   const addRow = useCallback(() => {
@@ -570,9 +615,28 @@ function GroupPricingTable({
 
   const removeRow = useCallback(
     (id: string) => {
+      const name =
+        pricingNames.current.get(id) ??
+        rows.find((row) => row._id === id)?.name.trim()
+      if (
+        name &&
+        !rows.some((row) => row._id !== id && row.name.trim() === name)
+      ) {
+        if (modelPrices && Object.hasOwn(modelPrices, name)) {
+          const next = { ...modelPrices }
+          delete next[name]
+          onChange('GroupModelPricing', JSON.stringify(next, null, 2))
+        }
+        if (forceGroupPrices && Object.hasOwn(forceGroupPrices, name)) {
+          const next = { ...forceGroupPrices }
+          delete next[name]
+          onChange('GroupModelPricingForce', JSON.stringify(next, null, 2))
+        }
+      }
+      pricingNames.current.delete(id)
       emitRows(rows.filter((row) => row._id !== id))
     },
-    [emitRows, rows]
+    [emitRows, rows, modelPrices, forceGroupPrices, onChange]
   )
 
   const duplicateNames = useMemo(() => {
@@ -621,21 +685,38 @@ function GroupPricingTable({
             )}
           </p>
         )}
-        {pricingGroup !== null && modelPrices !== null && (
-          <GroupModelPricingDialog
-            key={pricingGroup}
-            group={pricingGroup}
-            prices={modelPrices[pricingGroup] ?? {}}
-            onClose={() => setPricingGroup(null)}
-            onApply={(prices) => {
-              const next = { ...modelPrices }
-              if (Object.keys(prices).length) next[pricingGroup] = prices
-              else delete next[pricingGroup]
-              onChange('GroupModelPricing', JSON.stringify(next, null, 2))
-              setPricingGroup(null)
-            }}
-          />
+        {forceGroupPrices === null && (
+          <p role='alert' className='text-destructive mb-3 text-sm'>
+            {t(
+              'Group price priority must be a JSON object mapping group names to true or false.'
+            )}
+          </p>
         )}
+        {pricingGroup !== null &&
+          modelPrices !== null &&
+          forceGroupPrices !== null && (
+            <GroupModelPricingDialog
+              key={pricingGroup}
+              group={pricingGroup}
+              prices={modelPrices[pricingGroup] ?? {}}
+              forceGroupPrice={forceGroupPrices[pricingGroup] ?? false}
+              onClose={() => setPricingGroup(null)}
+              onApply={(prices, forceGroupPrice) => {
+                const next = { ...modelPrices }
+                if (Object.keys(prices).length) next[pricingGroup] = prices
+                else delete next[pricingGroup]
+                onChange('GroupModelPricing', JSON.stringify(next, null, 2))
+                const nextForce = { ...forceGroupPrices }
+                if (forceGroupPrice) nextForce[pricingGroup] = true
+                else delete nextForce[pricingGroup]
+                onChange(
+                  'GroupModelPricingForce',
+                  JSON.stringify(nextForce, null, 2)
+                )
+                setPricingGroup(null)
+              }}
+            />
+          )}
         <div className='flex min-w-0 flex-col gap-4'>
           <InputGroup className='max-w-sm'>
             <InputGroupAddon>
@@ -788,6 +869,7 @@ function GroupPricingTable({
                       disabled={
                         !row.name.trim() ||
                         modelPrices === null ||
+                        forceGroupPrices === null ||
                         duplicateNames.includes(row.name.trim())
                       }
                       aria-label={t('Model prices for {{group}}', {

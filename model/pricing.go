@@ -26,6 +26,7 @@ type PricingPluginVariant struct {
 
 type Pricing struct {
 	GroupModelPricing          map[string]billing_setting.GroupModelPricingRule `json:"group_model_pricing,omitempty"`
+	GroupModelPricingForce     map[string]bool                                  `json:"group_model_pricing_force,omitempty"`
 	ImageQualityPricingEnabled bool                                             `json:"image_quality_pricing_enabled,omitempty"`
 	ImageQualityPrices         []ImageQualityPriceItem                          `json:"image_quality_prices,omitempty"`
 	BillingPluginVariants      []PricingPluginVariant                           `json:"billing_plugin_variants,omitempty"`

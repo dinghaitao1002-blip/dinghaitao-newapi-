@@ -249,3 +249,51 @@ it('shows the quality matrix without fallback token or group prices when a built
   expect(screen.queryByText('builtin')).not.toBeInTheDocument()
   client.clear()
 })
+
+it.each([true, false])(
+  'shows the force-group policy only for enabled priced groups when force is %s',
+  (force) => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ModelDetailsContent
+          model={{
+            ...base,
+            enable_groups: ['default', 'vip'],
+            quota_type: 1,
+            model_price: 0.04,
+            group_model_pricing_force: { default: true, vip: force },
+            group_model_pricing: {
+              vip: {
+                unit: 'image',
+                expression: 'tier("group_model", fixed(0.06)) * image_count',
+                enabled: true,
+              },
+            },
+          }}
+          groupRatio={{ default: 1, vip: 1 }}
+          usableGroup={{
+            default: { desc: '', ratio: 1 },
+            vip: { desc: '', ratio: 1 },
+          }}
+          endpointMap={{}}
+          autoGroups={[]}
+          priceRate={1}
+          usdExchangeRate={1}
+          tokenUnit='M'
+        />
+      </QueryClientProvider>
+    )
+    expect(screen.getByText(/^0\.06\//)).toBeVisible()
+    if (force) {
+      expect(screen.getAllByText('Force group model prices')).toHaveLength(1)
+    } else {
+      expect(
+        screen.queryByText('Force group model prices')
+      ).not.toBeInTheDocument()
+    }
+    client.clear()
+  }
+)

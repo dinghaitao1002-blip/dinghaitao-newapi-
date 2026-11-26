@@ -32,6 +32,7 @@ import { Combobox } from '@/components/ui/combobox'
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -69,13 +70,18 @@ const unitLabelKeys = {
 export function GroupModelPricingDialog(props: {
   group: string
   prices: Record<string, GroupModelPrice>
+  forceGroupPrice?: boolean
   onClose: () => void
-  onApply: (prices: Record<string, GroupModelPrice>) => void
+  onApply: (
+    prices: Record<string, GroupModelPrice>,
+    forceGroupPrice: boolean
+  ) => void
 }) {
   const { t } = useTranslation()
   const form = useForm<GroupPriceFormValues>({
     resolver: zodResolver(groupPriceFormSchema),
     defaultValues: {
+      forceGroupPrice: props.forceGroupPrice ?? false,
       rows: Object.entries(props.prices).map(([model, rule]) => ({
         model,
         unit: rule.unit,
@@ -127,7 +133,7 @@ export function GroupModelPricingDialog(props: {
       }}
       title={t('Model prices for {{group}}', { group: props.group })}
       description={t(
-        'Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.'
+        'Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once.'
       )}
       contentClassName='sm:max-w-4xl'
       bodyClassName='space-y-4'
@@ -153,7 +159,8 @@ export function GroupModelPricingDialog(props: {
                       enabled: row.enabled,
                     },
                   ])
-                )
+                ),
+                data.forceGroupPrice ?? false
               )
             })}
           >
@@ -173,11 +180,33 @@ export function GroupModelPricingDialog(props: {
       )}
       <Form {...form}>
         <div className='space-y-3'>
+          <FormField
+            control={form.control}
+            name='forceGroupPrice'
+            render={({ field }) => (
+              <FormItem className='flex items-center justify-between gap-4 rounded-lg border p-4'>
+                <div className='space-y-1'>
+                  <FormLabel>{t('Force group model prices')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Enabled model prices in this group override user private prices. Models without an enabled group price keep their existing pricing.'
+                    )}
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value ?? false}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </FormItem>
+            )}
+          />
           {rows.fields.length === 0 && (
             <EmptyState
               title={t('No model prices in this group')}
               description={t(
-                'Models without an enabled group price use their global pricing.'
+                'Models without an enabled group price keep their existing pricing.'
               )}
             />
           )}
@@ -334,7 +363,7 @@ export function GroupModelPricingDialog(props: {
       </Form>
       <p className='text-muted-foreground text-sm'>
         {t(
-          'Disabled or removed prices fall back to global pricing. Click “Save group settings” after applying the draft to make changes effective.'
+          'Disabled or removed prices keep existing pricing rules. Click “Save group settings” after applying the draft to make changes effective.'
         )}
       </p>
     </Dialog>

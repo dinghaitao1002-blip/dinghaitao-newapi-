@@ -7483,6 +7483,16 @@
     "Output price (USD / 1M tokens)": "Output price (USD / 1M tokens)",
     "Per second": "Per second",
     "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.",
-    "This model already has a price in this group": "This model already has a price in this group"
+    "This model already has a price in this group": "This model already has a price in this group",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once.": "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once.",
+    "Force group model prices": "Force group model prices",
+    "Enabled model prices in this group override user private prices. Models without an enabled group price keep their existing pricing.": "Enabled model prices in this group override user private prices. Models without an enabled group price keep their existing pricing.",
+    "Set a group to true to make its enabled model prices override user private prices.": "Set a group to true to make its enabled model prices override user private prices.",
+    "Group price priority must be a JSON object mapping group names to true or false.": "Group price priority must be a JSON object mapping group names to true or false.",
+    "Models without an enabled group price keep their existing pricing.": "Models without an enabled group price keep their existing pricing.",
+    "Model prices are configured separately within each group. Disabled or missing rules keep existing pricing.": "Model prices are configured separately within each group. Disabled or missing rules keep existing pricing.",
+    "Disabled or removed prices keep existing pricing rules. Click “Save group settings” after applying the draft to make changes effective.": "Disabled or removed prices keep existing pricing rules. Click “Save group settings” after applying the draft to make changes effective.",
+    "forced group model pricing must be a JSON object mapping group names to booleans": "forced group model pricing must be a JSON object mapping group names to booleans",
+    "forced group model pricing requires non-empty group names and boolean values": "forced group model pricing requires non-empty group names and boolean values"
   }
 }

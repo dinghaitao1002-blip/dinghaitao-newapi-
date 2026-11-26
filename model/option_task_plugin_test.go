@@ -151,6 +151,56 @@ func TestGroupModelPricingOptionPersistenceAndValidation(t *testing.T) {
 	assert.False(t, found, "deleting a group must clear its explicit zero rule")
 }
 
+func TestGroupModelPricingForceOptionPersistenceAndValidation(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&Option{}))
+	previousOptions := common.OptionMap
+	previous := config.GlobalConfig.ExportAllConfigs()[billing_setting.GroupModelPricingForceOption]
+	common.OptionMap = map[string]string{}
+	t.Cleanup(func() {
+		common.OptionMap = previousOptions
+		config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing_force": previous})
+		require.NoError(t, DB.Where(Option{Key: billing_setting.GroupModelPricingForceOption}).Delete(&Option{}).Error)
+	})
+	const validJSON = `{"香蕉提升成本分组":true,"other":false}`
+	require.NoError(t, UpdateOption(billing_setting.GroupModelPricingForceOption, validJSON))
+	var persisted Option
+	require.NoError(t, DB.Where(Option{Key: billing_setting.GroupModelPricingForceOption}).First(&persisted).Error)
+	assert.Equal(t, validJSON, persisted.Value)
+	assert.True(t, billing_setting.IsGroupModelPricingForced("香蕉提升成本分组"))
+	assert.False(t, billing_setting.IsGroupModelPricingForced("other"))
+	assert.False(t, billing_setting.IsGroupModelPricingForced("unconfigured"))
+	config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing_force": `{}`})
+	assert.False(t, billing_setting.IsGroupModelPricingForced("香蕉提升成本分组"))
+	require.NoError(t, updateOptionMap(persisted.Key, persisted.Value))
+	assert.True(t, billing_setting.IsGroupModelPricingForced("香蕉提升成本分组"))
+	for _, invalid := range []string{`null`, `[]`, `{"retail":null}`, `{"retail":1}`, `{"retail":"true"}`, `{"":true}`, `{" retail":true}`, `{"retail":{}}`} {
+		t.Run(invalid, func(t *testing.T) {
+			require.Error(t, UpdateOption(billing_setting.GroupModelPricingForceOption, invalid))
+			require.Error(t, updateOptionMap(billing_setting.GroupModelPricingForceOption, invalid))
+			require.NoError(t, DB.Where(Option{Key: persisted.Key}).First(&persisted).Error)
+			assert.Equal(t, validJSON, persisted.Value)
+			assert.Equal(t, validJSON, common.OptionMap[billing_setting.GroupModelPricingForceOption])
+			assert.True(t, billing_setting.IsGroupModelPricingForced("香蕉提升成本分组"))
+		})
+	}
+	t.Run("failed persistence retains old priority", func(t *testing.T) {
+		const callback = "test:reject_group_price_priority_update"
+		require.NoError(t, DB.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
+			if option, ok := tx.Statement.Dest.(*Option); ok && option.Key == billing_setting.GroupModelPricingForceOption {
+				tx.AddError(errors.New("forced group priority persistence failure"))
+			}
+		}))
+		defer func() { require.NoError(t, DB.Callback().Update().Remove(callback)) }()
+		require.ErrorContains(t, UpdateOption(billing_setting.GroupModelPricingForceOption, `{}`), "forced group priority persistence failure")
+		require.NoError(t, DB.Where(Option{Key: persisted.Key}).First(&persisted).Error)
+		assert.Equal(t, validJSON, persisted.Value)
+		assert.True(t, billing_setting.IsGroupModelPricingForced("香蕉提升成本分组"))
+	})
+	require.NoError(t, UpdateOptionsBulk(map[string]string{billing_setting.GroupModelPricingForceOption: `{}`}))
+	assert.False(t, billing_setting.IsGroupModelPricingForced("香蕉提升成本分组"))
+}
+
 // The existing model TestMain selects a real SQLite, MySQL or PostgreSQL
 // database. Run this contract on each engine; Redis is optional for local runs.
 func TestModelConcurrencyOptionAndTaskRecovery(t *testing.T) {

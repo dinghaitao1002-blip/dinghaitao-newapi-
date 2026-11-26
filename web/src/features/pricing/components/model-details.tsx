@@ -1159,6 +1159,11 @@ function GroupPricingSection(props: GroupPricingSectionProps) {
                 {(scoped || qualityPrices?.length) && (
                   <GroupBadge group={group} size='sm' />
                 )}
+                {scoped && props.model.group_model_pricing_force?.[group] && (
+                  <p className='text-muted-foreground text-xs'>
+                    {t('Force group model prices')}
+                  </p>
+                )}
                 {content}
               </div>
             )

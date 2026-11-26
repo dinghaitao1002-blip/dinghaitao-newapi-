@@ -7483,6 +7483,16 @@
     "Output price (USD / 1M tokens)": "Giá đầu ra (USD / 1 triệu token)",
     "Per second": "Mỗi giây",
     "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Đặt giá cơ sở riêng cho mỗi mô hình bằng USD. Hệ số nhóm áp dụng một lần. Giá riêng được ưu tiên.",
-    "This model already has a price in this group": "Mô hình này đã có giá trong nhóm"
+    "This model already has a price in this group": "Mô hình này đã có giá trong nhóm",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once.": "Đặt giá cơ bản riêng cho từng mô hình trong nhóm này. Giá tính bằng USD và hệ số nhóm có hiệu lực chỉ được áp dụng một lần.",
+    "Force group model prices": "Bắt buộc dùng giá mô hình của nhóm",
+    "Enabled model prices in this group override user private prices. Models without an enabled group price keep their existing pricing.": "Giá mô hình đang bật trong nhóm này được ưu tiên hơn giá riêng của người dùng. Mô hình chưa bật giá nhóm giữ nguyên cách tính phí hiện tại.",
+    "Set a group to true to make its enabled model prices override user private prices.": "Đặt nhóm thành true để giá mô hình đang bật được ưu tiên hơn giá riêng của người dùng.",
+    "Group price priority must be a JSON object mapping group names to true or false.": "Ưu tiên giá nhóm phải là đối tượng JSON ánh xạ tên nhóm tới true hoặc false.",
+    "Models without an enabled group price keep their existing pricing.": "Mô hình chưa bật giá nhóm giữ nguyên cách tính phí hiện tại.",
+    "Model prices are configured separately within each group. Disabled or missing rules keep existing pricing.": "Giá mô hình được đặt riêng trong từng nhóm. Quy tắc bị tắt hoặc chưa có giữ nguyên cách tính phí hiện tại.",
+    "Disabled or removed prices keep existing pricing rules. Click “Save group settings” after applying the draft to make changes effective.": "Giá bị tắt hoặc xóa giữ nguyên quy tắc tính phí hiện tại. Nhấn “Lưu cài đặt nhóm” sau khi áp dụng bản nháp để thay đổi có hiệu lực.",
+    "forced group model pricing must be a JSON object mapping group names to booleans": "Giá mô hình nhóm bắt buộc phải là đối tượng JSON ánh xạ tên nhóm tới giá trị boolean",
+    "forced group model pricing requires non-empty group names and boolean values": "Giá mô hình nhóm bắt buộc yêu cầu tên nhóm không trống và giá trị boolean"
   }
 }

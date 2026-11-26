@@ -63,6 +63,7 @@ export type BillingPluginVariant = {
 }
 
 export type PricingModel = {
+  group_model_pricing_force?: Record<string, boolean>
   group_model_pricing?: Record<
     string,
     {

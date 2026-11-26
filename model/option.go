@@ -244,6 +244,9 @@ func validateOptionValue(key string, value string) error {
 	if key == billing_setting.GroupModelPricingOption {
 		return billing_setting.ValidateGroupModelPricingJSONString(value)
 	}
+	if key == billing_setting.GroupModelPricingForceOption {
+		return billing_setting.ValidateGroupModelPricingForceJSONString(value)
+	}
 	if key == common.ModelConcurrencyOptionKey {
 		_, err := common.ParseModelConcurrencyConfig(value)
 		return err
@@ -291,7 +294,7 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
-	if key == common.ModelConcurrencyOptionKey || key == billing_setting.GroupModelPricingOption {
+	if key == common.ModelConcurrencyOptionKey || key == billing_setting.GroupModelPricingOption || key == billing_setting.GroupModelPricingForceOption {
 		return UpdateOptionsBulk(map[string]string{key: value})
 	}
 	if IsRequestPolicyOption(key) {
@@ -362,7 +365,9 @@ func UpdateOptionsBulk(values map[string]string) error {
 		}
 	}
 
-	if _, updatesGroupPricing := values[billing_setting.GroupModelPricingOption]; updatesGroupPricing {
+	_, updatesGroupPricing := values[billing_setting.GroupModelPricingOption]
+	_, updatesGroupPriority := values[billing_setting.GroupModelPricingForceOption]
+	if updatesGroupPricing || updatesGroupPriority {
 		// Match loadOptionsFromDatabase's lock order after request-policy locks.
 		groupModelPricingOptionMutex.Lock()
 		defer groupModelPricingOptionMutex.Unlock()
@@ -397,6 +402,11 @@ func UpdateOptionsBulk(values map[string]string) error {
 func updateOptionMap(key string, value string) (err error) {
 	if key == billing_setting.GroupModelPricingOption {
 		if err := billing_setting.ValidateGroupModelPricingJSONString(value); err != nil {
+			return err
+		}
+	}
+	if key == billing_setting.GroupModelPricingForceOption {
+		if err := billing_setting.ValidateGroupModelPricingForceJSONString(value); err != nil {
 			return err
 		}
 	}

@@ -61,7 +61,10 @@ export function useUpdateOption() {
       if (data.success) {
         // Always refresh system-options
         queryClient.invalidateQueries({ queryKey: ['system-options'] })
-        if (variables.key === 'billing_setting.group_model_pricing') {
+        if (
+          variables.key === 'billing_setting.group_model_pricing' ||
+          variables.key === 'billing_setting.group_model_pricing_force'
+        ) {
           queryClient.invalidateQueries({ queryKey: ['pricing'] })
         }
 

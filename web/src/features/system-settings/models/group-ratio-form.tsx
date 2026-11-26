@@ -75,6 +75,7 @@ export type GroupFormValues = {
   DefaultUseAutoGroup: boolean
   GroupSpecialUsableGroup: string
   GroupModelPricing?: string
+  GroupModelPricingForce?: string
 }
 
 type GroupRatioFormProps = {
@@ -227,6 +228,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
             }
             groupSpecialUsableGroup={values.GroupSpecialUsableGroup ?? ''}
             groupModelPricing={values.GroupModelPricing ?? '{}'}
+            groupModelPricingForce={values.GroupModelPricingForce ?? '{}'}
             onChange={(field, value) =>
               handleFieldChange(field as keyof GroupFormValues, value)
             }
@@ -250,7 +252,31 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                   </FormControl>
                   <FormDescription>
                     {t(
-                      'Model prices are configured separately within each group. Disabled or missing rules use global pricing.'
+                      'Model prices are configured separately within each group. Disabled or missing rules keep existing pricing.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='GroupModelPricingForce'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Force group model prices')}</FormLabel>
+                  <FormControl>
+                    <JsonCodeEditor
+                      value={field.value ?? '{}'}
+                      onChange={field.onChange}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      textareaRef={field.ref}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Set a group to true to make its enabled model prices override user private prices.'
                     )}
                   </FormDescription>
                   <FormMessage />

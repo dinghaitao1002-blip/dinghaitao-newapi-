@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -19,8 +20,10 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {
@@ -153,6 +156,92 @@ func TestGroupModelPricingReservesAndSettlesFrozenExpressions(t *testing.T) {
 			require.NotNil(t, settled)
 			assert.Equal(t, tc.wantFinal, quota)
 			assert.Equal(t, tc.expression, info.TieredBillingSnapshot.ExprString)
+		})
+	}
+}
+
+func TestForcedGroupPricePreservesNativeGeminiAndPerCallUnits(t *testing.T) {
+	oldDB := model.DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	pool, err := db.DB()
+	require.NoError(t, err)
+	pool.SetMaxOpenConns(1)
+	model.DB = db
+	saved := config.GlobalConfig.ExportAllConfigs()
+	savedPrices := ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() {
+		model.DB = oldDB
+		require.NoError(t, pool.Close())
+		require.NoError(t, config.GlobalConfig.LoadFromDB(saved))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
+	})
+	require.NoError(t, db.AutoMigrate(&model.UserModelPrice{}))
+	const modelName = "gemini-3-pro-image-preview"
+	const group = "香蕉提升成本分组"
+	require.NoError(t, model.UpsertUserModelPrice(615, modelName, 0.045, true))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"gemini-3-pro-image-preview":0.08}`))
+	for _, tc := range []struct {
+		name, selected, unit, expression  string
+		forced, disabled, noRule, perCall bool
+		wantQuota                         int
+		wantTier                          string
+	}{
+		{name: "native Gemini forced group image price wins private scalar", forced: true, unit: "image", expression: `tier("group_model", fixed(0.06)) * image_count`, wantQuota: 30000, wantTier: "group_model"},
+		{name: "flag off preserves native Gemini private price", unit: "image", expression: `tier("group_model", fixed(0.06)) * image_count`, wantQuota: 22500, wantTier: "user_private"},
+		{name: "other group retains native Gemini private price", selected: "other", forced: true, unit: "image", expression: `tier("group_model", fixed(0.06)) * image_count`, wantQuota: 22500, wantTier: "user_private"},
+		{name: "forced flag does not affect models with disabled group price", forced: true, disabled: true, unit: "image", expression: `tier("group_model", fixed(0.06)) * image_count`, wantQuota: 22500},
+		{name: "forced flag does not affect models without group price", forced: true, noRule: true, unit: "image", expression: `tier("group_model", fixed(0.06)) * image_count`, wantQuota: 22500},
+		{name: "forced native Gemini explicit zero stays free", forced: true, unit: "image", expression: `tier("group_model", fixed(0)) * image_count`, wantTier: "group_model"},
+		{name: "forced group token price retains token units", forced: true, unit: "token", expression: `tier("group_model", p * 2 + c * 8)`, wantQuota: 1000, wantTier: "group_model"},
+		{name: "per call forced group request price wins private", forced: true, perCall: true, unit: "request", expression: `tier("group_model", fixed(0.06))`, wantQuota: 30000},
+		{name: "per call flag off preserves private", perCall: true, unit: "request", expression: `tier("group_model", fixed(0.06))`, wantQuota: 22500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rules := map[string]map[string]billing_setting.GroupModelPricingRule{}
+			if !tc.noRule {
+				for _, selected := range []string{group, "other"} {
+					rules[selected] = map[string]billing_setting.GroupModelPricingRule{modelName: {Unit: tc.unit, Expression: tc.expression, Enabled: !tc.disabled}}
+				}
+			}
+			encoded, err := common.Marshal(rules)
+			require.NoError(t, err)
+			force, err := common.Marshal(map[string]bool{group: tc.forced})
+			require.NoError(t, err)
+			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+				billing_setting.GroupModelPricingOption: string(encoded), billing_setting.GroupModelPricingForceOption: string(force),
+				"billing_setting.billing_mode": `{}`, "billing_setting.billing_expr": `{}`,
+				"group_ratio_setting.group_ratio":       `{"香蕉提升成本分组":1,"other":1}`,
+				"group_ratio_setting.group_group_ratio": `{}`, "quota_setting.pre_consume_multiplier": "1",
+			}))
+			selected := group
+			if tc.selected != "" {
+				selected = tc.selected
+			}
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/"+modelName+":generateContent", nil)
+			ctx.Set("auto_group", selected)
+			info := &relaycommon.RelayInfo{UserId: 615, OriginModelName: modelName, UserGroup: "default", UsingGroup: "default", Request: &dto.GeminiChatRequest{}, BillingRequestInput: &billingexpr.RequestInput{Body: []byte(`{}`)}}
+			if tc.perCall {
+				price, err := ModelPriceHelperPerCall(ctx, info)
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantQuota, price.QuotaToPreConsume)
+				return
+			}
+			price, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantQuota, price.QuotaToPreConsume)
+			if tc.wantTier == "" {
+				require.Nil(t, info.TieredBillingSnapshot)
+				return
+			}
+			require.NotNil(t, info.TieredBillingSnapshot)
+			assert.Equal(t, tc.wantTier, info.TieredBillingSnapshot.EstimatedTier)
+			// A subsequent policy toggle never reprices an accepted request.
+			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{billing_setting.GroupModelPricingForceOption: `{}`}))
+			used, quota, _ := service.TryTieredSettle(info, billingexpr.TokenParams{P: 1000, Len: 1000})
+			assert.True(t, used)
+			assert.Equal(t, tc.wantQuota, quota)
 		})
 	}
 }

@@ -7483,6 +7483,16 @@
     "Output price (USD / 1M tokens)": "Цена вывода (USD / 1 млн токенов)",
     "Per second": "За секунду",
     "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Задайте базовую цену каждой модели в USD. Коэффициент группы применяется один раз. Личные цены приоритетны.",
-    "This model already has a price in this group": "Цена модели уже задана в этой группе"
+    "This model already has a price in this group": "Цена модели уже задана в этой группе",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once.": "Задайте отдельную базовую цену для каждой модели группы. Цены указаны в USD; действующий коэффициент группы применяется один раз.",
+    "Force group model prices": "Принудительно использовать цены моделей группы",
+    "Enabled model prices in this group override user private prices. Models without an enabled group price keep their existing pricing.": "Включённые цены моделей этой группы имеют приоритет над персональными ценами. Модели без включённой групповой цены сохраняют прежнюю тарификацию.",
+    "Set a group to true to make its enabled model prices override user private prices.": "Установите true для группы, чтобы её включённые цены моделей имели приоритет над персональными ценами.",
+    "Group price priority must be a JSON object mapping group names to true or false.": "Приоритет групповых цен должен быть JSON-объектом, сопоставляющим именам групп true или false.",
+    "Models without an enabled group price keep their existing pricing.": "Модели без включённой групповой цены сохраняют прежнюю тарификацию.",
+    "Model prices are configured separately within each group. Disabled or missing rules keep existing pricing.": "Цены моделей задаются отдельно в каждой группе. При отсутствии или отключении правила сохраняется прежняя тарификация.",
+    "Disabled or removed prices keep existing pricing rules. Click “Save group settings” after applying the draft to make changes effective.": "При отключении или удалении цены сохраняются прежние правила тарификации. После применения черновика нажмите «Сохранить настройки групп», чтобы изменения вступили в силу.",
+    "forced group model pricing must be a JSON object mapping group names to booleans": "Принудительная групповая тарификация моделей должна быть JSON-объектом, сопоставляющим именам групп логические значения",
+    "forced group model pricing requires non-empty group names and boolean values": "Принудительная групповая тарификация моделей требует непустых имён групп и логических значений"
   }
 }

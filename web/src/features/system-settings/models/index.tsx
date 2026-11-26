@@ -56,6 +56,7 @@ const defaultModelSettings: ModelSettings = {
   'billing_setting.billing_expr': '{}',
   'billing_setting.plugin_billing_expr': '{}',
   'billing_setting.group_model_pricing': '{}',
+  'billing_setting.group_model_pricing_force': '{}',
   'tool_price_setting.prices': '{}',
   TopupGroupRatio: '',
   GroupRatio: '',
