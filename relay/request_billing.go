@@ -60,11 +60,50 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
 	}
+	c.Set("billing_pricing_group", info.UsingGroup)
 	if priceData.FreeModel && !service.IsImageAsyncRequest(c) {
 		logger.LogInfo(c, common.LogText("model %s is free, skipping pre-consume", info.OriginModelName))
 		return nil
 	}
 	return service.PreConsumeBilling(c, priceData.QuotaToPreConsume, info)
+}
+
+// PrepareRequestBillingForSelectedGroup also replaces the unit-price snapshot
+// when auto routing changes groups. Changing only the multiplier would charge
+// the previous group's price when two groups happen to share that multiplier.
+func PrepareRequestBillingForSelectedGroup(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
+	previous, prepared := c.Get("billing_pricing_group")
+	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
+	if prepared && previous != info.UsingGroup && (c.GetBool("group_model_pricing_applied") || helper.HasGroupModelPricing(info, info.UsingGroup)) {
+		info.TieredBillingSnapshot = nil
+		info.ImageQualityPriceSource = ""
+		info.ImageQuality = ""
+		info.ImageResolution = ""
+		info.ImageQualityUnitPrice = 0
+		info.ImageQuotaBeforeGroup = 0
+		meta := &types.TokenCountMeta{TokenType: types.TokenTypeTokenizer}
+		if info.Request != nil {
+			meta = info.Request.GetTokenCountMeta()
+		}
+		// BillingRequestInput contains the original request facts, including
+		// WebSocket bodies; it is independent of the selected pricing rule.
+		price, err := helper.ModelPriceHelper(c, info, info.GetEstimatePromptTokens(), meta)
+		if err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+		c.Set("billing_pricing_group", info.UsingGroup)
+		if info.Billing != nil {
+			info.PriceData.FreeModel = false
+			if err := info.Billing.Reserve(price.QuotaToPreConsume); err != nil {
+				return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+			}
+			info.FinalPreConsumedQuota = info.Billing.GetPreConsumedQuota()
+		} else if !price.FreeModel || service.IsImageAsyncRequest(c) {
+			return service.PreConsumeBilling(c, price.QuotaToPreConsume, info)
+		}
+	}
+	c.Set("billing_pricing_group", info.UsingGroup)
+	return service.PrepareTieredBillingForSelectedGroup(c, info)
 }
 
 // RefundFailedRequestBilling applies the common final-failure policy after all

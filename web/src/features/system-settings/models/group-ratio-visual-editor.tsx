@@ -83,6 +83,8 @@ import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
 import { safeJsonParse } from '../utils/json-parser'
+import { parseGroupModelPrices } from './group-model-pricing'
+import { GroupModelPricingDialog } from './group-model-pricing-dialog'
 import { GroupSpecialUsableRulesEditor } from './group-special-usable-editor'
 
 export type GroupSettingsSection =
@@ -102,6 +104,7 @@ type GroupRatioVisualEditorProps = {
   autoGroups: string
   maxTokenAutoGroupsField: ReactNode
   groupSpecialUsableGroup: string
+  groupModelPricing?: string
   onChange: (field: string, value: string) => void
 }
 
@@ -277,6 +280,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   autoGroups,
   maxTokenAutoGroupsField,
   groupSpecialUsableGroup,
+  groupModelPricing,
   onChange,
 }: GroupRatioVisualEditorProps) {
   const { t, i18n } = useTranslation()
@@ -372,6 +376,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
           topupGroupRatio={topupGroupRatio}
           onChange={onChange}
           onShowDetail={setDetailGroup}
+          groupModelPricing={groupModelPricing ?? '{}'}
         />
       </TabsContent>
       <TabsContent value='overrides' keepMounted>
@@ -477,6 +482,7 @@ type GroupPricingTableProps = {
   topupGroupRatio: string
   onChange: (field: string, value: string) => void
   onShowDetail: (name: string) => void
+  groupModelPricing: string
 }
 
 function GroupPricingTable({
@@ -485,9 +491,15 @@ function GroupPricingTable({
   topupGroupRatio,
   onChange,
   onShowDetail,
+  groupModelPricing,
 }: GroupPricingTableProps) {
   const { t } = useTranslation()
   const [search, setSearch] = useState('')
+  const [pricingGroup, setPricingGroup] = useState<string | null>(null)
+  const modelPrices = useMemo(
+    () => parseGroupModelPrices(groupModelPricing),
+    [groupModelPricing]
+  )
   const [rows, setRows] = useState<GroupPricingRow[]>(() =>
     buildGroupPricingRows(groupRatio, userUsableGroups, topupGroupRatio)
   )
@@ -602,6 +614,28 @@ function GroupPricingTable({
         </div>
       </CardHeader>
       <CardContent>
+        {modelPrices === null && (
+          <p role='alert' className='text-destructive mb-3 text-sm'>
+            {t(
+              'Group model prices contain invalid rules. Correct the JSON before editing model prices.'
+            )}
+          </p>
+        )}
+        {pricingGroup !== null && modelPrices !== null && (
+          <GroupModelPricingDialog
+            key={pricingGroup}
+            group={pricingGroup}
+            prices={modelPrices[pricingGroup] ?? {}}
+            onClose={() => setPricingGroup(null)}
+            onApply={(prices) => {
+              const next = { ...modelPrices }
+              if (Object.keys(prices).length) next[pricingGroup] = prices
+              else delete next[pricingGroup]
+              onChange('GroupModelPricing', JSON.stringify(next, null, 2))
+              setPricingGroup(null)
+            }}
+          />
+        )}
         <div className='flex min-w-0 flex-col gap-4'>
           <InputGroup className='max-w-sm'>
             <InputGroupAddon>
@@ -746,6 +780,22 @@ function GroupPricingTable({
                 cellClassName: 'text-right',
                 cell: (row) => (
                   <div className='flex justify-end gap-1'>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={() => setPricingGroup(row.name.trim())}
+                      disabled={
+                        !row.name.trim() ||
+                        modelPrices === null ||
+                        duplicateNames.includes(row.name.trim())
+                      }
+                      aria-label={t('Model prices for {{group}}', {
+                        group: row.name.trim(),
+                      })}
+                    >
+                      {t('Model prices')}
+                    </Button>
                     <Button
                       variant='ghost'
                       size='sm'

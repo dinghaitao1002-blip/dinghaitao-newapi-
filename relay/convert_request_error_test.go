@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -18,7 +19,10 @@ import (
 	kitreasoning "github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -28,6 +32,65 @@ import (
 
 type imageReservation struct {
 	held, limit int
+}
+
+func TestSelectedGroupRepricesSameRatioAndPreservesFrozenPrice(t *testing.T) {
+	database := setupRelayChannelDB(t)
+	require.NoError(t, database.AutoMigrate(&model.UserModelPrice{}))
+	oldConfig := config.GlobalConfig.ExportAllConfigs()[billing_setting.GroupModelPricingOption]
+	if oldConfig == "" {
+		oldConfig = "{}"
+	}
+	oldPrices, oldGroups := ratio_setting.ModelPrice2JSONString(), ratio_setting.GroupRatio2JSONString()
+	t.Cleanup(func() {
+		config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing": oldConfig})
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(oldPrices))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldGroups))
+	})
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"retry-group-fixture":0.02}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"first":1,"second":1,"fallback":1}`))
+	initial := `{"first":{"retry-group-fixture":{"unit":"request","expression":"tier(\"group_model\",fixed(0.01))","enabled":true}},"second":{"retry-group-fixture":{"unit":"request","expression":"tier(\"group_model\",fixed(0.03))","enabled":true}}}`
+	setRules := func(raw string) {
+		config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing": raw})
+	}
+	setRules(initial)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	info := &relaycommon.RelayInfo{UserId: 1, UserGroup: "default", UsingGroup: "first", OriginModelName: "retry-group-fixture", Request: &dto.GeneralOpenAIRequest{Model: "retry-group-fixture"}}
+	price, err := helper.ModelPriceHelper(c, info, 100, &types.TokenCountMeta{})
+	require.NoError(t, err)
+	c.Set("billing_pricing_group", info.UsingGroup)
+	reservation := &imageReservation{held: price.QuotaToPreConsume, limit: 1_000_000}
+	info.Billing = reservation
+	c.Set("auto_group", "second")
+	require.Nil(t, PrepareRequestBillingForSelectedGroup(c, info))
+	require.NotNil(t, info.TieredBillingSnapshot)
+	assert.Contains(t, info.TieredBillingSnapshot.ExprString, "0.03")
+	want, err := billingexpr.QuotaRoundStrict(0.03 * common.QuotaPerUnit)
+	require.NoError(t, err)
+	assert.Equal(t, want, reservation.held, "top up before sending to the more expensive group")
+
+	setRules(strings.ReplaceAll(initial, "0.03", "0.07"))
+	require.Nil(t, PrepareRequestBillingForSelectedGroup(c, info))
+	ok, quota, result := service.TryTieredSettle(info, billingexpr.TokenParams{})
+	require.True(t, ok)
+	require.NotNil(t, result)
+	assert.Equal(t, want, quota, "an in-flight request retains its selected group's price")
+
+	c.Set("auto_group", "fallback")
+	require.Nil(t, PrepareRequestBillingForSelectedGroup(c, info))
+	assert.Nil(t, info.TieredBillingSnapshot, "a group without an override must return to global pricing")
+	assert.InDelta(t, 0.02, info.PriceData.ModelPrice, 1e-12)
+	assert.False(t, c.GetBool("group_model_pricing_applied"))
+
+	// A failed reservation blocks the new attempt instead of serving it at the old price.
+	setRules(initial)
+	reservation.limit = reservation.held
+	setRules(strings.ReplaceAll(initial, "0.03", "0.09"))
+	c.Set("auto_group", "second")
+	apiErr := PrepareRequestBillingForSelectedGroup(c, info)
+	require.NotNil(t, apiErr)
+	assert.True(t, types.IsSkipRetryError(apiErr))
 }
 
 func (s *imageReservation) Reserve(quota int) error {

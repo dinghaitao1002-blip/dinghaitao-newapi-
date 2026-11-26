@@ -249,6 +249,14 @@ func ListModels(c *gin.Context, modelType int) {
 		}
 	}
 	models := service.GetGroupsEnabledModels(ownerGroups)
+	groupPricedModels := make(map[string]bool)
+	for _, group := range ownerGroups {
+		for _, name := range service.GetGroupsEnabledModels([]string{group}) {
+			if helper.HasGroupModelPricing(&relaycommon.RelayInfo{OriginModelName: name}, group) {
+				groupPricedModels[name] = true
+			}
+		}
+	}
 	for _, modelName := range models {
 		if modelLimitEnable {
 			matchingName := ratio_setting.RoutingMatchModelName(modelName)
@@ -256,7 +264,7 @@ func ListModels(c *gin.Context, modelType int) {
 				continue
 			}
 		}
-		if !acceptUnsetRatioModel && !helper.HasModelBillingConfig(modelName) {
+		if !acceptUnsetRatioModel && !helper.HasModelBillingConfig(modelName) && !groupPricedModels[modelName] {
 			continue
 		}
 		userModelNames = append(userModelNames, modelName)

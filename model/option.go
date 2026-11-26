@@ -4,12 +4,14 @@ import (
 	"maps"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/performance_setting"
@@ -22,6 +24,10 @@ type Option struct {
 	Key   string `json:"key" gorm:"primaryKey"`
 	Value string `json:"value"`
 }
+
+// Keep group-price commits and publication in the same order within a node.
+// Option synchronization takes this lock before reading its database snapshot.
+var groupModelPricingOptionMutex sync.Mutex
 
 func AllOption() ([]*Option, error) {
 	var options []*Option
@@ -209,6 +215,8 @@ func loadOptionsFromDatabase() {
 	}()
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
+	groupModelPricingOptionMutex.Lock()
+	defer groupModelPricingOptionMutex.Unlock()
 	options, _ := AllOption()
 	passkeyOptions := make(map[string]string)
 	for _, option := range options {
@@ -233,6 +241,9 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == billing_setting.GroupModelPricingOption {
+		return billing_setting.ValidateGroupModelPricingJSONString(value)
+	}
 	if key == common.ModelConcurrencyOptionKey {
 		_, err := common.ParseModelConcurrencyConfig(value)
 		return err
@@ -280,7 +291,7 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
-	if key == common.ModelConcurrencyOptionKey {
+	if key == common.ModelConcurrencyOptionKey || key == billing_setting.GroupModelPricingOption {
 		return UpdateOptionsBulk(map[string]string{key: value})
 	}
 	if IsRequestPolicyOption(key) {
@@ -351,6 +362,11 @@ func UpdateOptionsBulk(values map[string]string) error {
 		}
 	}
 
+	if _, updatesGroupPricing := values[billing_setting.GroupModelPricingOption]; updatesGroupPricing {
+		// Match loadOptionsFromDatabase's lock order after request-policy locks.
+		groupModelPricingOptionMutex.Lock()
+		defer groupModelPricingOptionMutex.Unlock()
+	}
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		for k, v := range values {
 			option := Option{Key: k}
@@ -379,6 +395,11 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	if key == billing_setting.GroupModelPricingOption {
+		if err := billing_setting.ValidateGroupModelPricingJSONString(value); err != nil {
+			return err
+		}
+	}
 	// Reject malformed concurrency state before publishing either the option
 	// map or its runtime snapshot, including during startup option loading.
 	if key == common.ModelConcurrencyOptionKey {

@@ -63,6 +63,14 @@ export type BillingPluginVariant = {
 }
 
 export type PricingModel = {
+  group_model_pricing?: Record<
+    string,
+    {
+      unit: 'request' | 'image' | 'second' | 'token'
+      expression: string
+      enabled: boolean
+    }
+  >
   billing_plugin_variants?: BillingPluginVariant[]
   id: number
   model_name: string

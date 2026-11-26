@@ -28,15 +28,24 @@ import {
   getDynamicPricingSummary,
   isUnconfiguredTaskUsageModel,
 } from '../lib/dynamic-price'
+import { resolveDisplayGroupPricing } from '../lib/group-model-price'
 import { isTokenBasedModel } from '../lib/model-helpers'
 import { formatPrice, stripTrailingZeros } from '../lib/price'
 import type { PricingModel } from '../types'
 import type { ModelPriceCellOptions } from './model-price-cell'
 
-export function CachedPriceCell(props: {
+export function CachedPriceCell(rawProps: {
   model: PricingModel
   options: ModelPriceCellOptions
 }) {
+  const display = resolveDisplayGroupPricing(
+    rawProps.model,
+    rawProps.options.selectedGroup
+  )
+  const props = {
+    model: display.model,
+    options: { ...rawProps.options, selectedGroup: display.selectedGroup },
+  }
   const { t } = useTranslation()
   const {
     tokenUnit = DEFAULT_TOKEN_UNIT,
@@ -74,6 +83,10 @@ export function CachedPriceCell(props: {
       currency,
     ]
   )
+
+  if (display.mixedGroupUnits) {
+    return <span className='text-muted-foreground/30 text-xs'>—</span>
+  }
 
   if (dynamicSummary) {
     if (dynamicSummary.isSpecialExpression) {

@@ -7467,6 +7467,22 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Add model price": "Thêm giá mô hình",
+    "Billing unit": "Đơn vị tính phí",
+    "Disabled or removed prices fall back to global pricing. Click “Save group settings” after applying the draft to make changes effective.": "Tắt hoặc xóa giá sẽ dùng giá toàn cục. Sau khi áp dụng bản nháp, nhấn “Lưu cài đặt nhóm” để có hiệu lực.",
+    "Enable group price": "Bật giá nhóm",
+    "Group model prices": "Giá mô hình theo nhóm",
+    "Group model prices contain invalid rules. Correct the JSON before editing model prices.": "Quy tắc giá không hợp lệ. Sửa JSON trước khi chỉnh giá.",
+    "Input price (USD / 1M tokens)": "Giá đầu vào (USD / 1 triệu token)",
+    "Model price {{index}}": "Giá mô hình {{index}}",
+    "Model prices are configured separately within each group. Disabled or missing rules use global pricing.": "Đặt giá mô hình riêng cho từng nhóm. Quy tắc bị tắt hoặc thiếu sẽ dùng giá toàn cục.",
+    "Model prices for {{group}}": "Giá mô hình cho {{group}}",
+    "Models without an enabled group price use their global pricing.": "Mô hình chưa bật giá nhóm sẽ dùng giá toàn cục.",
+    "No model prices in this group": "Chưa có giá mô hình trong nhóm này",
+    "Output price (USD / 1M tokens)": "Giá đầu ra (USD / 1 triệu token)",
+    "Per second": "Mỗi giây",
+    "Set a separate base price for each model in this group. Prices are in USD and the effective group ratio applies once. User private prices take priority.": "Đặt giá cơ sở riêng cho mỗi mô hình bằng USD. Hệ số nhóm áp dụng một lần. Giá riêng được ưu tiên.",
+    "This model already has a price in this group": "Mô hình này đã có giá trong nhóm"
   }
 }

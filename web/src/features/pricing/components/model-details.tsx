@@ -78,7 +78,12 @@ import {
   type DynamicPriceEntry,
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
-import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
+import { withModelGroupPricing } from '../lib/group-model-price'
+import {
+  getAvailableGroups,
+  getConfiguredGroupRatio,
+  isTokenBasedModel,
+} from '../lib/model-helpers'
 import { withPluginPricing } from '../lib/plugin-pricing'
 import {
   formatFixedPrice,
@@ -110,6 +115,7 @@ import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelDetailsApi } from './model-details-api'
 import { ModelDetailsPerformance } from './model-details-performance'
+import { ModelPriceCell } from './model-price-cell'
 
 // ----------------------------------------------------------------------------
 // Local UI helpers
@@ -1085,6 +1091,7 @@ function getDynamicFormattedPricesByTier(
 // ----------------------------------------------------------------------------
 
 type GroupPricingSectionProps = {
+  hideTitle?: boolean
   model: PricingModel
   groupRatio: Record<string, number>
   usableGroup: Record<string, { desc: string; ratio: number }>
@@ -1097,13 +1104,76 @@ type GroupPricingSectionProps = {
 
 function GroupPricingSection(props: GroupPricingSectionProps) {
   const { t } = useTranslation()
+  if (Object.keys(props.model.group_model_pricing ?? {}).length > 0) {
+    const groups = getAvailableGroups(props.model, props.usableGroup)
+    return (
+      <section>
+        <SectionTitle>{t('Pricing by Group')}</SectionTitle>
+        <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
+        <div className='divide-y rounded-lg border'>
+          {groups.map((group) => {
+            const model = withModelGroupPricing(props.model, group)
+            const scoped = props.model.group_model_pricing?.[group]?.enabled
+            const qualityPrices = model.image_quality_pricing_enabled
+              ? model.image_quality_prices?.map((item) => ({
+                  ...item,
+                  price:
+                    item.price *
+                    getConfiguredGroupRatio(props.groupRatio, group),
+                }))
+              : undefined
+            let content = (
+              <ModelPriceCell
+                model={{ ...model, group_ratio: props.groupRatio }}
+                options={{
+                  selectedGroup: group,
+                  tokenUnit: props.tokenUnit,
+                  showRechargePrice: props.showRechargePrice,
+                  priceRate: props.priceRate,
+                  usdExchangeRate: props.usdExchangeRate,
+                }}
+              />
+            )
+            if (qualityPrices?.length) {
+              content = (
+                <ImageQualityPricingSection
+                  model={{ ...model, image_quality_prices: qualityPrices }}
+                />
+              )
+            } else if (!scoped) {
+              content = (
+                <GroupPricingSection
+                  {...props}
+                  model={{
+                    ...model,
+                    group_model_pricing: undefined,
+                    enable_groups: [group],
+                  }}
+                  usableGroup={{ [group]: props.usableGroup[group] }}
+                  hideTitle
+                />
+              )
+            }
+            return (
+              <div key={group} className='min-w-0 space-y-3 p-3'>
+                {(scoped || qualityPrices?.length) && (
+                  <GroupBadge group={group} size='sm' />
+                )}
+                {content}
+              </div>
+            )
+          })}
+        </div>
+      </section>
+    )
+  }
   const variants = props.model.billing_plugin_variants
   if (!variants?.length) {
     return <ProviderGroupPricingSection {...props} />
   }
   return (
     <section>
-      <SectionTitle>{t('Pricing by Group')}</SectionTitle>
+      {!props.hideTitle && <SectionTitle>{t('Pricing by Group')}</SectionTitle>}
       <Tabs key={props.model.model_name} defaultValue={variants[0].plugin_key}>
         <TabsList
           aria-label={t('Provider')}
@@ -1602,11 +1672,14 @@ export interface ModelDetailsContentProps {
 export function ModelDetailsContent(props: ModelDetailsContentProps) {
   const { t } = useTranslation()
   const showRechargePrice = props.showRechargePrice ?? false
+  const hasGroupModelPrices =
+    Object.keys(props.model.group_model_pricing ?? {}).length > 0
 
   const isImageQualityPricing =
     Boolean(props.model.image_quality_pricing_enabled) ||
     props.model.billing_mode === 'image_quality'
   const isDynamic =
+    !hasGroupModelPrices &&
     !isImageQualityPricing &&
     props.model.billing_mode === 'tiered_expr' &&
     Boolean(props.model.billing_expr)
@@ -1617,6 +1690,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
     props.model.billing_usage_schema
   )
   const showBasePrices =
+    !hasGroupModelPrices &&
     !isImageQualityPricing &&
     (!props.model.billing_usage_schema ||
       simpleTaskPricing ||
@@ -1657,7 +1731,9 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
                 showRechargePrice={showRechargePrice}
               />
             )}
-            <ImageQualityPricingSection model={props.model} />
+            {!hasGroupModelPrices && (
+              <ImageQualityPricingSection model={props.model} />
+            )}
             {isDynamic && !simpleTaskPricing && (
               <DynamicPricingBreakdown
                 billingExpr={props.model.billing_expr}
@@ -1669,7 +1745,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
                 }}
               />
             )}
-            {!isImageQualityPricing && (
+            {(!isImageQualityPricing || hasGroupModelPrices) && (
               <GroupPricingSection
                 model={props.model}
                 groupRatio={props.groupRatio}

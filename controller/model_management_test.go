@@ -31,6 +31,45 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestPublicCatalogGroupPricesStayWithinVisibleGroups(t *testing.T) {
+	before := config.GlobalConfig.ExportAllConfigs()[billing_setting.GroupModelPricingOption]
+	if before == "" {
+		before = "{}"
+	}
+	t.Cleanup(func() {
+		config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing": before})
+	})
+	config.UpdateConfigFromMap(config.GlobalConfig.Get("billing_setting"), map[string]string{"group_model_pricing": `{
+		"vip":{"catalog-test":{"unit":"request","expression":"tier(\"group_model\",fixed(0))","enabled":true}},
+		"hidden":{"catalog-test":{"unit":"request","expression":"tier(\"group_model\",fixed(9))","enabled":true}},
+		"disabled":{"catalog-test":{"unit":"request","expression":"tier(\"group_model\",fixed(1))","enabled":false}},
+		"unserved":{"catalog-test":{"unit":"request","expression":"tier(\"group_model\",fixed(2))","enabled":true}}
+	}`})
+	cached := []model.Pricing{{ModelName: "catalog-test", EnableGroup: []string{"vip", "hidden", "disabled"}}}
+	visible := withVisibleGroupModelPricing(cached, map[string]string{"vip": "", "disabled": "", "unserved": ""})
+	require.Len(t, visible, 1)
+	require.Len(t, visible[0].GroupModelPricing, 1)
+	assert.Equal(t, "tier(\"group_model\",fixed(0))", visible[0].GroupModelPricing["vip"].Expression)
+	assert.Nil(t, cached[0].GroupModelPricing, "the catalog cache must remain viewer-independent")
+	other := withVisibleGroupModelPricing(cached, map[string]string{"hidden": ""})
+	require.Len(t, other[0].GroupModelPricing, 1)
+	assert.Contains(t, other[0].GroupModelPricing, "hidden")
+	assert.NotContains(t, other[0].GroupModelPricing, "vip")
+	alias := withVisibleGroupModelPricing([]model.Pricing{{ModelName: "catalog-test@reasoning:low", EnableGroup: []string{"vip"}}}, map[string]string{"vip": ""})
+	require.Contains(t, alias[0].GroupModelPricing, "vip", "public display must use the same canonical client model fallback as runtime billing")
+}
+
+func TestPublicGroupRatiosIncludeFallbackAndPreserveZeroAndSpecial(t *testing.T) {
+	before, specials := ratio_setting.GroupRatio2JSONString(), ratio_setting.GroupGroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(before))
+		require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(specials))
+	})
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"free":0,"special":2,"hidden":9}`))
+	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"source":{"special":0.3}}`))
+	assert.Equal(t, map[string]float64{"free": 0, "special": 0.3, "missing": 1}, visibleGroupRatios("source", map[string]string{"free": "", "special": "", "missing": ""}))
+}
+
 func modelManagementDB(t *testing.T, kind, dsn string) *gorm.DB {
 	t.Helper()
 	database, isolatedDSN := newAuditTestDatabase(t, kind, dsn)

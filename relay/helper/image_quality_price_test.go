@@ -47,10 +47,12 @@ func TestImageQualityPricingPrecedesOnlyBuiltinTieredDefault(t *testing.T) {
 	const userID = 4242
 	const explicitExpression = `tier("explicit", fixed(0.7))`
 	for _, tc := range []struct {
-		name, mode, source string
-		public, private    bool
-		wantPrice          float64
-		wantTiered         bool
+		name, mode, source     string
+		public, private, group bool
+		userFlatPrice          *float64
+		modifier               bool
+		wantPrice              float64
+		wantTiered             bool
 	}{
 		{name: "public quality overrides builtin", public: true, source: "model_image_quality_public", wantPrice: 0.2},
 		{name: "private quality overrides public and builtin", public: true, private: true, source: "user_image_quality_private", wantPrice: 0.1},
@@ -59,11 +61,28 @@ func TestImageQualityPricingPrecedesOnlyBuiltinTieredDefault(t *testing.T) {
 		{name: "explicit tiered still precedes public quality", mode: billing_setting.BillingModeTieredExpr, public: true, wantTiered: true},
 		{name: "explicit tiered still precedes private quality", mode: billing_setting.BillingModeTieredExpr, public: true, private: true, wantTiered: true},
 		{name: "builtin remains fallback without quality price", wantTiered: true},
+		{name: "group image price overrides public quality", public: true, group: true, wantTiered: true, wantPrice: 0.03},
+		{name: "user quality price precedes group image price", public: true, private: true, group: true, wantTiered: true, wantPrice: 0.1},
+		{name: "user flat price precedes group image price", public: true, group: true, userFlatPrice: common.GetPointer(0.05), wantTiered: true, wantPrice: 0.05},
+		{name: "zero user flat price precedes group image price", public: true, group: true, userFlatPrice: common.GetPointer(0.0), wantTiered: true},
+		{name: "canonical user price precedes exact modifier group rule", group: true, modifier: true, userFlatPrice: common.GetPointer(0.05), wantTiered: true, wantPrice: 0.05},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.NoError(t, db.Where("1 = 1").Delete(&model.ModelImageQualityPrice{}).Error)
 			require.NoError(t, db.Where("1 = 1").Delete(&model.UserModelImageQualityPrice{}).Error)
+			require.NoError(t, db.Where("1 = 1").Delete(&model.UserModelPrice{}).Error)
+			require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
 			*settings = billing_setting.BillingSetting{BillingMode: map[string]string{}, BillingExpr: map[string]string{}}
+			requestModel := modelName
+			if tc.modifier {
+				requestModel += "@temperature:0.2"
+				require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"gpt-image-2":0.8}`))
+			}
+			if tc.group {
+				settings.GroupModelPricing = map[string]map[string]billing_setting.GroupModelPricingRule{"default": {
+					requestModel: {Unit: "image", Expression: `tier("group_model", fixed(0.03)) * image_count`, Enabled: true},
+				}}
+			}
 			if tc.mode != "" {
 				settings.BillingMode[modelName] = tc.mode
 			}
@@ -76,12 +95,28 @@ func TestImageQualityPricingPrecedesOnlyBuiltinTieredDefault(t *testing.T) {
 			if tc.private {
 				require.NoError(t, model.SaveUserModelImageQualityPrices(userID, modelName, fullImageQualityPriceMatrix(0.1), true))
 			}
-			ctx, info, meta := newImageQualityPriceTestContext(modelName, userID, "high", "2048x2048", 2)
+			if tc.userFlatPrice != nil {
+				require.NoError(t, model.UpsertUserModelPrice(userID, modelName, *tc.userFlatPrice, true))
+			}
+			ctx, info, meta := newImageQualityPriceTestContext(requestModel, userID, "high", "2048x2048", 2)
 			priceData, err := ModelPriceHelper(ctx, info, 1000, meta)
 			require.NoError(t, err)
 			if tc.wantTiered {
 				require.NotNil(t, info.TieredBillingSnapshot)
 				require.False(t, priceData.UsePrice)
+				if tc.group {
+					expected, err := common.QuotaRoundStrict(tc.wantPrice * common.QuotaPerUnit * priceData.GroupRatioInfo.GroupRatio * 2)
+					require.NoError(t, err)
+					require.Equal(t, expected, priceData.QuotaToPreConsume)
+					if tc.private || tc.userFlatPrice != nil {
+						require.Equal(t, "user_private", info.TieredBillingSnapshot.EstimatedTier)
+						if tc.modifier {
+							require.Equal(t, modelName, info.GetBillingModelName())
+						}
+					} else {
+						require.Equal(t, "group_model", info.TieredBillingSnapshot.EstimatedTier)
+					}
+				}
 				if tc.mode == billing_setting.BillingModeTieredExpr {
 					require.Equal(t, explicitExpression, info.TieredBillingSnapshot.ExprString)
 					expected, err := common.QuotaRoundStrict(0.7 * common.QuotaPerUnit * priceData.GroupRatioInfo.GroupRatio)

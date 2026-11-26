@@ -30,6 +30,7 @@ import {
   getDynamicPricingSummary,
   isUnconfiguredTaskUsageModel,
 } from '../lib/dynamic-price'
+import { resolveDisplayGroupPricing } from '../lib/group-model-price'
 import { isTokenBasedModel } from '../lib/model-helpers'
 import {
   formatPrice,
@@ -48,11 +49,20 @@ export type ModelPriceCellOptions = {
   selectedGroup?: string
 }
 
-export function ModelPriceCell(props: {
+export function ModelPriceCell(rawProps: {
   model: PricingModel
   options?: ModelPriceCellOptions
   showExpression?: boolean
 }) {
+  const display = resolveDisplayGroupPricing(
+    rawProps.model,
+    rawProps.options?.selectedGroup
+  )
+  const props = {
+    ...rawProps,
+    model: display.model,
+    options: { ...rawProps.options, selectedGroup: display.selectedGroup },
+  }
   const { t, i18n } = useTranslation()
   const currency = useSystemConfigStore((state) => state.config.currency)
   const currencyLabel =
@@ -95,6 +105,13 @@ export function ModelPriceCell(props: {
   const unconfiguredCaption = dynamic?.hasUnconfiguredProviders
     ? t('Not configured for some providers')
     : ''
+  if (display.mixedGroupUnits) {
+    return (
+      <span className='text-muted-foreground text-sm'>
+        {t('Pricing by Group')}
+      </span>
+    )
+  }
   let caption = t('{{currency}} / {{unit}} tokens', {
     currency: currencyLabel,
     unit: tokenUnitLabel,

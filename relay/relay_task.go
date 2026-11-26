@@ -259,35 +259,71 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if pinnedPlugin.Plugin != nil {
 		pluginKey = pinnedPlugin.Plugin.Meta.Key
 	}
+	groupRatioInfo := helper.HandleGroupRatio(c, info)
+	groupRule, groupConfigured := helper.GroupModelPricingRuleForModel(info.UsingGroup, modelName)
 	exprStr, exists := billing_setting.ResolveTaskBillingExpr(pluginKey, modelName, info.UpstreamModelName)
 	useTiered := exists || billing_setting.GetBillingMode(modelName) == billing_setting.BillingModeTieredExpr
+	privateApplied := false
+	privateUsageKey := ""
+	// Preserve the existing user's unit, even if the group's rule chooses a
+	// different one. Dynamic public expressions remain outside scalar private pricing.
+	for _, key := range []string{"image_count", "seconds"} {
+		if _, flat := billingexpr.TaskUnitPrice(exprStr, key); !flat {
+			continue
+		}
+		if price, configured := model.GetUserModelPrice(info.UserId, modelName); configured {
+			exprStr = `tier("user_private", u("` + key + `") * ` + strconv.FormatFloat(price, 'g', -1, 64) + `)`
+			privateApplied = true
+			privateUsageKey = key
+		}
+		break
+	}
+	groupRequestPrice, groupUsageKey := false, ""
+	if groupConfigured && privateApplied {
+		groupUsageKey = privateUsageKey
+	}
+	if groupConfigured && !privateApplied {
+		values, parseErr := billing_setting.ParseGroupModelPricingRule(groupRule)
+		if parseErr != nil {
+			return nil, service.TaskErrorWrapperLocal(parseErr, "model_price_error", http.StatusBadRequest)
+		}
+		if groupRule.Unit == "token" {
+			return nil, service.TaskErrorWrapperLocal(fmt.Errorf("token group pricing requires token usage and cannot price a task usage request"), "model_price_error", http.StatusBadRequest)
+		}
+		price, tier := values.UnitPrice, "group_model"
+		if userPrice, configured := model.GetUserModelPrice(info.UserId, modelName); configured {
+			price, tier = userPrice, "user_private"
+		}
+		switch groupRule.Unit {
+		case "request":
+			// Task expressions return USD. A constant freezes the full request
+			// price without adding legacy duration or resolution multipliers.
+			exprStr = `tier("` + tier + `", ` + strconv.FormatFloat(price, 'g', -1, 64) + `)`
+			groupRequestPrice = true
+		case "image", "second":
+			groupUsageKey = "image_count"
+			if groupRule.Unit == "second" {
+				groupUsageKey = "seconds"
+			}
+			exprStr = `tier("` + tier + `", u("` + groupUsageKey + `") * ` + strconv.FormatFloat(price, 'g', -1, 64) + `)`
+		default:
+			return nil, service.TaskErrorWrapperLocal(fmt.Errorf("unsupported group pricing unit %s", groupRule.Unit), "model_price_error", http.StatusBadRequest)
+		}
+		exists, useTiered = true, true
+	}
 	if useTiered {
 		provider, supported := adaptor.(channel.TaskUsageFactsProvider)
 		if billingexpr.UsesFixedPricing(exprStr) {
 			return nil, service.TaskErrorWrapper(fmt.Errorf("fixed pricing is not supported for task usage expressions"), "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		}
-		if !exists || !supported {
+		if !exists || (!supported && !groupRequestPrice) {
 			return nil, service.TaskErrorWrapper(fmt.Errorf("task model %s has no usage expression or meter", modelName), "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		}
 		sharedModel := pinnedPlugin.Generation.SharedModel(modelName) || pinnedPlugin.Generation.SharedModel(info.UpstreamModelName)
-		if sharedModel && pinnedPlugin.Plugin != nil {
+		if (sharedModel || groupUsageKey != "") && pinnedPlugin.Plugin != nil {
 			schema, _ := pinnedPlugin.Plugin.Meta.UsageForModels(info.UpstreamModelName, modelName)
 			if !billing_setting.TaskExprCompatible(exprStr, schema) {
 				return nil, service.TaskErrorWrapper(fmt.Errorf("task model %s pricing is not configured for plugin %s", modelName, pluginKey), "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
-			}
-		}
-		// Override only a pure image/second unit price, never token or dynamic
-		// usage rules. The task snapshot retains this price through completion.
-		privateUsageKey := ""
-		for _, key := range []string{"image_count", "seconds"} {
-			if _, flat := billingexpr.TaskUnitPrice(exprStr, key); flat {
-				privateUsageKey = key
-				break
-			}
-		}
-		if privateUsageKey != "" {
-			if price, configured := model.GetUserModelPrice(info.UserId, modelName); configured {
-				exprStr = `tier("user_private", u("` + privateUsageKey + `") * ` + strconv.FormatFloat(price, 'g', -1, 64) + `)`
 			}
 		}
 		var facts map[string]any
@@ -296,8 +332,13 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			if err != nil {
 				return nil, service.TaskErrorWrapperLocal(err, "plugin_usage_invalid", http.StatusBadRequest)
 			}
-		} else {
+		} else if supported {
 			facts = provider.ExtractUsageFacts(c, info)
+		}
+		if groupUsageKey != "" {
+			if _, measured := facts[groupUsageKey]; !measured {
+				return nil, service.TaskErrorWrapperLocal(fmt.Errorf("group pricing requires task usage fact %s", groupUsageKey), "model_price_error", http.StatusBadRequest)
+			}
 		}
 		cost, trace, runErr := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: facts})
 		if runErr != nil || cost < 0 {
@@ -306,7 +347,6 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			}
 			return nil, service.TaskErrorWrapper(runErr, "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		}
-		groupRatioInfo := helper.HandleGroupRatio(c, info)
 		quota, clamp := common.QuotaRoundChecked(cost * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 		noteTaskQuotaClamp(info, clamp)
 		priceData = types.PriceData{Quota: quota, QuotaToPreConsume: quota, GroupRatioInfo: groupRatioInfo}

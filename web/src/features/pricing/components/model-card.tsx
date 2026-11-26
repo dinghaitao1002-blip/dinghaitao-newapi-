@@ -37,6 +37,7 @@ import {
   isUnconfiguredTaskUsageModel,
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
+import { resolveDisplayGroupPricing } from '../lib/group-model-price'
 import { isTokenBasedModel } from '../lib/model-helpers'
 import {
   formatPrice,
@@ -60,7 +61,11 @@ export interface ModelCardProps {
   perf?: ModelPerfBadgeData
 }
 
-export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
+export const ModelCard = memo(function ModelCard(rawProps: ModelCardProps) {
+  const props = {
+    ...rawProps,
+    ...resolveDisplayGroupPricing(rawProps.model, rawProps.selectedGroup),
+  }
   const { t, i18n } = useTranslation()
   const tokenUnit = props.tokenUnit ?? DEFAULT_TOKEN_UNIT
   const priceRate = props.priceRate ?? 1
@@ -113,13 +118,20 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
     [props.model, dynamicPriceOptions, currency]
   )
   const cardExamplePrice = useMemo(
-    () => getCardExamplePrice(props.model, dynamicPriceOptions),
+    () =>
+      props.mixedGroupUnits
+        ? null
+        : getCardExamplePrice(props.model, dynamicPriceOptions),
     // Currency is read indirectly by the price formatter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [props.model, dynamicPriceOptions, currency]
+    [props.model, props.mixedGroupUnits, dynamicPriceOptions, currency]
   )
   let priceSummary: ReactNode
-  if (isImageQualityPricing) {
+  if (props.mixedGroupUnits) {
+    priceSummary = (
+      <span className='text-muted-foreground'>{t('Pricing by Group')}</span>
+    )
+  } else if (isImageQualityPricing) {
     priceSummary = (
       <span className='text-muted-foreground whitespace-nowrap'>
         <span className='text-foreground font-medium'>{t('按品质收费')}</span>

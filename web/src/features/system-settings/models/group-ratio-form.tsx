@@ -65,7 +65,7 @@ import {
   type GroupSettingsSection,
 } from './group-ratio-visual-editor'
 
-type GroupFormValues = {
+export type GroupFormValues = {
   GroupRatio: string
   TopupGroupRatio: string
   UserUsableGroups: string
@@ -74,6 +74,7 @@ type GroupFormValues = {
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
   GroupSpecialUsableGroup: string
+  GroupModelPricing?: string
 }
 
 type GroupRatioFormProps = {
@@ -225,12 +226,37 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               />
             }
             groupSpecialUsableGroup={values.GroupSpecialUsableGroup ?? ''}
+            groupModelPricing={values.GroupModelPricing ?? '{}'}
             onChange={(field, value) =>
               handleFieldChange(field as keyof GroupFormValues, value)
             }
           />
         ) : (
           <SettingsForm onSubmit={form.handleSubmit(onSave)}>
+            <FormField
+              control={form.control}
+              name='GroupModelPricing'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Group model prices')}</FormLabel>
+                  <FormControl>
+                    <JsonCodeEditor
+                      value={field.value ?? '{}'}
+                      onChange={field.onChange}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      textareaRef={field.ref}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Model prices are configured separately within each group. Disabled or missing rules use global pricing.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
             <FormField
               control={form.control}
               name='GroupRatio'
