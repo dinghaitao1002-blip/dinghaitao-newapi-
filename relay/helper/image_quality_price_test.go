@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -365,7 +366,7 @@ func TestImageQualityPricingPriorityAndFallback(t *testing.T) {
 	})
 }
 
-func TestUserImageQualityPrivatePriceAcceptsMaxAsHigh(t *testing.T) {
+func TestUserImageQualityPrivatePriceQualityTiers(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	oldDB := model.DB
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -382,19 +383,34 @@ func TestUserImageQualityPrivatePriceAcceptsMaxAsHigh(t *testing.T) {
 
 	const modelName = "gpt-image-2.5-sunburst"
 	const userID = 4343
-	items := fullImageQualityPriceMatrix(0.1)
+	prices := map[string]float64{model.ImageQualityLow: 0.1, model.ImageQualityMedium: 0.2, model.ImageQualityHigh: 0.3}
+	items := fullImageQualityPriceMatrix(0)
 	for i := range items {
-		if items[i].Quality == model.ImageQualityHigh && items[i].Resolution == model.ImageResolution2K {
-			items[i].Price = 0.3
-		}
+		items[i].Price = prices[items[i].Quality]
 	}
 	require.NoError(t, model.SaveUserModelImageQualityPrices(userID, modelName, items, true))
 
-	ctx, info, meta := newImageQualityPriceTestContext(modelName, userID, "max", "2k", 1)
-	price, ok, err := resolveImageQualityPricing(ctx, info, meta)
-	require.NoError(t, err)
-	require.True(t, ok)
-	require.Equal(t, 0.3, price)
-	require.Equal(t, model.ImageQualityHigh, info.ImageQuality)
-	require.Equal(t, "user_image_quality_private", info.ImageQualityPriceSource)
+	for _, tc := range []struct {
+		raw, want string
+	}{
+		{raw: "max", want: model.ImageQualityHigh},
+		{raw: "xhigh", want: model.ImageQualityHigh},
+		{raw: "low", want: model.ImageQualityLow},
+		{raw: "", want: model.ImageQualityMedium},
+		{raw: "auto", want: model.ImageQualityMedium},
+		// Values outside the frozen alias table are priced as medium.
+		{raw: "premium", want: model.ImageQualityMedium},
+		{raw: "2k", want: model.ImageQualityMedium},
+		{raw: "invalid_quality", want: model.ImageQualityMedium},
+	} {
+		t.Run("quality="+tc.raw, func(t *testing.T) {
+			ctx, info, meta := newImageQualityPriceTestContext(modelName, userID, tc.raw, "2k", 1)
+			price, ok, err := resolveImageQualityPricing(ctx, info, meta)
+			require.NoError(t, err)
+			require.True(t, ok)
+			assert.Equal(t, prices[tc.want], price)
+			assert.Equal(t, tc.want, info.ImageQuality)
+			assert.Equal(t, "user_image_quality_private", info.ImageQualityPriceSource)
+		})
+	}
 }

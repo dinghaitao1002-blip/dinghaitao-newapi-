@@ -105,7 +105,14 @@ func resolveImageQualityPricing(c *gin.Context, info *relaycommon.RelayInfo, met
 		return 0, false, nil
 	}
 
+	// The alias table in NormalizeImageQuality is frozen. Any other client value
+	// is priced as medium, the same tier as an absent or "auto" quality.
 	quality := model.NormalizeImageQuality(imageReq.Quality)
+	switch quality {
+	case model.ImageQualityLow, model.ImageQualityMedium, model.ImageQualityHigh:
+	default:
+		quality = model.ImageQualityMedium
+	}
 	resolution := model.NormalizeImageResolution(imageReq.Size)
 
 	// 只有确实存在品质价格配置时，才要求请求尺寸可归一化。
